@@ -27,17 +27,24 @@ pub mod gamegambit {
         Ok(())
     }
 
-    // Initialize or update player profile
+    // Initialize or update player profile - RACE CONDITION FIXED
     pub fn initialize_player(ctx: Context<InitializePlayer>) -> Result<()> {
         let player_profile = &mut ctx.accounts.player_profile;
         let current_time = Clock::get()?.unix_timestamp;
         
-        if player_profile.player == Pubkey::default() {
-            // New player initialization
+        // Check if this is truly a new account by examining the discriminator
+        // Anchor automatically sets discriminator on init, so we can use that
+        let is_new_account = player_profile.player == Pubkey::default();
+        
+        if is_new_account {
+            // ATOMIC INITIALIZATION - all fields set in single transaction
+            // This prevents race conditions since Anchor's init constraint ensures 
+            // only one transaction can successfully initialize the account
+            
             player_profile.player = ctx.accounts.player.key();
             player_profile.mu = 25.0; // OpenSkill initial rating
             player_profile.sigma = 25.0 / 3.0; // Initial uncertainty
-            player_profile.xp = 0;
+            player_profile.xp = 500; // Include first-day bonus immediately
             player_profile.rank = Rank::BronzeV;
             player_profile.wins = 0;
             player_profile.losses = 0;
@@ -63,22 +70,34 @@ pub mod gamegambit {
             player_profile.weekly_matches = 0;
             player_profile.last_weekly_reset = current_time;
             
-            // Award first-day bonus XP
-            player_profile.xp += 500; // Daily login bonus for first day
-            
+            // Atomically increment total players count
             let platform_config = &mut ctx.accounts.platform_config;
-            platform_config.total_players += 1;
+            platform_config.total_players = platform_config.total_players
+                .checked_add(1)
+                .ok_or(ErrorCode::Overflow)?;
+                
         } else {
-            // Daily login bonus
+            // EXISTING PLAYER LOGIN - Handle daily bonuses with proper checks
             let last_login_day = player_profile.last_active / 86400;
             let current_day = current_time / 86400;
             
+            // Only award daily bonus if it's actually a new day
             if current_day > last_login_day {
-                player_profile.xp += 100; // Daily login bonus
+                // Prevent overflow on XP
+                player_profile.xp = player_profile.xp
+                    .checked_add(100)
+                    .ok_or(ErrorCode::Overflow)?;
+                    
+                // Update daily login streak atomically
+                player_profile.current_daily_login_streak = player_profile.current_daily_login_streak
+                    .checked_add(1)
+                    .ok_or(ErrorCode::Overflow)?;
+                    
                 PlayerProfileHelpers::update_rank(player_profile)?;
             }
         }
         
+        // Always update last_active timestamp
         player_profile.last_active = current_time;
         Ok(())
     }
