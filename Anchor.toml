@@ -1,0 +1,19 @@
+[toolchain]
+package_manager = "npm"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+gamegambit = "2utNaXCHzRvuX3kNz4DAsQyV7s25G2Q1gHNWFfckTng1"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "npm run ts-mocha -- -p ./tsconfig.json --timeout 1000000 tests/**/*.ts"
