@@ -33,14 +33,10 @@ pub mod gamegambit {
         let current_time = Clock::get()?.unix_timestamp;
         
         // Check if this is truly a new account by examining the discriminator
-        // Anchor automatically sets discriminator on init, so we can use that
         let is_new_account = player_profile.player == Pubkey::default();
         
         if is_new_account {
             // ATOMIC INITIALIZATION - all fields set in single transaction
-            // This prevents race conditions since Anchor's init constraint ensures 
-            // only one transaction can successfully initialize the account
-            
             player_profile.player = ctx.accounts.player.key();
             player_profile.mu = 25.0; // OpenSkill initial rating
             player_profile.sigma = 25.0 / 3.0; // Initial uncertainty
@@ -69,6 +65,9 @@ pub mod gamegambit {
             player_profile.season_challenges = 0;
             player_profile.weekly_matches = 0;
             player_profile.last_weekly_reset = current_time;
+            player_profile.badges_minted = 0;
+            player_profile.seasonal_badges = 0;
+            player_profile.last_badge_mint_time = 0;
             
             // Atomically increment total players count
             let platform_config = &mut ctx.accounts.platform_config;
@@ -106,7 +105,7 @@ pub mod gamegambit {
         let player_profile = &mut ctx.accounts.player_profile;
         let current_time = Clock::get()?.unix_timestamp;
         
-        // Initialize new player - this can only succeed once due to init constraint
+        // Initialize new player
         player_profile.player = ctx.accounts.player.key();
         player_profile.mu = 25.0;
         player_profile.sigma = 25.0 / 3.0;
@@ -135,6 +134,9 @@ pub mod gamegambit {
         player_profile.season_challenges = 0;
         player_profile.weekly_matches = 0;
         player_profile.last_weekly_reset = current_time;
+        player_profile.badges_minted = 0;
+        player_profile.seasonal_badges = 0;
+        player_profile.last_badge_mint_time = 0;
         
         // Atomically increment total players
         let platform_config = &mut ctx.accounts.platform_config;
@@ -406,90 +408,115 @@ pub mod gamegambit {
     }
 
     pub fn mint_badge_nft(
-        ctx: Context<MintBadgeNFT>, 
-        badge_type: BadgeType,
-        name: String, 
-        symbol: String, 
-        uri: String
-    ) -> Result<()> {
-        // Verify player has earned this badge
-        BadgeHelpers::verify_badge_eligibility(&ctx.accounts.player_profile, &badge_type)?;
+    ctx: Context<MintBadgeNFT>, 
+    badge_type: BadgeType,
+    name: String, 
+    symbol: String, 
+    uri: String
+) -> Result<()> {
+    let current_time = Clock::get()?.unix_timestamp;
+    
+    // Enhanced verification with anti-gaming measures
+    BadgeHelpers::verify_badge_eligibility(
+        &ctx.accounts.player_profile, 
+        &badge_type,
+        current_time
+    )?;
 
-        // Mint NFT to player
-        token::mint_to(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                MintTo {
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.player_token_account.to_account_info(),
-                    authority: ctx.accounts.authority.to_account_info(),
-                },
-            ),
-            1, // NFT amount = 1
-        )?;
+    // Mark badge as minted BEFORE minting to prevent re-entrance
+    BadgeHelpers::mark_badge_minted(&mut ctx.accounts.player_profile, &badge_type)?;
+    
+    // Update last badge mint time for rate limiting
+    ctx.accounts.player_profile.last_badge_mint_time = current_time;
 
-        // Create metadata
-        let creators = vec![
-            Creator {
-                address: ctx.accounts.authority.key(),
-                verified: true,
-                share: 100,
+    // Mint NFT to player
+    token::mint_to(
+        CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            MintTo {
+                mint: ctx.accounts.mint.to_account_info(),
+                to: ctx.accounts.player_token_account.to_account_info(),
+                authority: ctx.accounts.authority.to_account_info(),
             },
-        ];
+        ),
+        1, // NFT amount = 1
+    )?;
 
-        let cpi_accounts = CreateMetadataAccountV3 {
-            metadata: ctx.accounts.metadata.key(),
-            mint: ctx.accounts.mint.key(),
-            mint_authority: ctx.accounts.authority.key(),
-            payer: ctx.accounts.authority.key(),
-            update_authority: (ctx.accounts.authority.key(), true),
-            system_program: ctx.accounts.system_program.key(),
-            rent: Some(ctx.accounts.rent.key()),
-        };
+    // Create metadata
+    let creators = vec![
+        Creator {
+            address: ctx.accounts.authority.key(),
+            verified: true,
+            share: 100,
+        },
+    ];
 
-        let cpi_args = CreateMetadataAccountV3InstructionArgs {
-            data: DataV2 {
-                name,
-                symbol,
-                uri,
-                seller_fee_basis_points: 500, // 5% royalty
-                creators: Some(creators),
-                collection: None,
-                uses: None,
-            },
-            is_mutable: true,
-            collection_details: None,
-        };
+    let cpi_accounts = CreateMetadataAccountV3 {
+        metadata: ctx.accounts.metadata.key(),
+        mint: ctx.accounts.mint.key(),
+        mint_authority: ctx.accounts.authority.key(),
+        payer: ctx.accounts.authority.key(),
+        update_authority: (ctx.accounts.authority.key(), true),
+        system_program: ctx.accounts.system_program.key(),
+        rent: Some(ctx.accounts.rent.key()),
+    };
 
-        let instruction = cpi_accounts.instruction(cpi_args);
+    let cpi_args = CreateMetadataAccountV3InstructionArgs {
+        data: DataV2 {
+            name,
+            symbol,
+            uri: uri.clone(), // Clone uri to avoid move
+            seller_fee_basis_points: 500, // 5% royalty
+            creators: Some(creators),
+            collection: None,
+            uses: None,
+        },
+        is_mutable: true,
+        collection_details: None,
+    };
 
-        let accounts = [
-            ctx.accounts.metadata.to_account_info(),
-            ctx.accounts.mint.to_account_info(),
-            ctx.accounts.authority.to_account_info(),
-            ctx.accounts.authority.to_account_info(),
-            ctx.accounts.authority.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.rent.to_account_info(),
-        ];
+    let instruction = cpi_accounts.instruction(cpi_args);
 
-        anchor_lang::solana_program::program::invoke(&instruction, &accounts)?;
+    let accounts = [
+        ctx.accounts.metadata.to_account_info(),
+        ctx.accounts.mint.to_account_info(),
+        ctx.accounts.authority.to_account_info(),
+        ctx.accounts.authority.to_account_info(),
+        ctx.accounts.authority.to_account_info(),
+        ctx.accounts.system_program.to_account_info(),
+        ctx.accounts.rent.to_account_info(),
+    ];
 
-        // Update player profile
-        let player_profile = &mut ctx.accounts.player_profile;
-        player_profile.badges_earned += 1;
-        
-        // Update prestige score based on badge rarity
-        let prestige_points = match BadgeHelpers::get_badge_rarity(&badge_type) {
-            BadgeRarity::Common => 1,
-            BadgeRarity::Rare => 3,
-            BadgeRarity::Epic => 7,
-            BadgeRarity::Legendary => 10,
-        };
-        player_profile.prestige_score += prestige_points;
+    anchor_lang::solana_program::program::invoke(&instruction, &accounts)?;
 
-        Ok(())
+    // Update prestige score based on badge rarity
+    let prestige_points = match BadgeHelpers::get_badge_rarity(&badge_type) {
+        BadgeRarity::Common => 1,
+        BadgeRarity::Rare => 3,
+        BadgeRarity::Epic => 7,
+        BadgeRarity::Legendary => 10,
+    };
+    ctx.accounts.player_profile.prestige_score += prestige_points;
+
+    // Update global badge registry
+    ctx.accounts.badge_registry.total_badges_minted += 1;
+    let badge_index = BadgeHelpers::badge_type_to_index(&badge_type) as usize;
+    if badge_index < 128 {
+        ctx.accounts.badge_registry.badge_type_counts[badge_index] += 1;
     }
+
+    // Initialize badge record
+    let badge_record = &mut ctx.accounts.badge_record;
+    badge_record.player = ctx.accounts.player.key();
+    badge_record.badge_type = badge_type;
+    badge_record.mint = ctx.accounts.mint.key();
+    badge_record.minted_at = current_time;
+    badge_record.season_earned = ctx.accounts.platform_config.current_season;
+    badge_record.metadata_uri = uri; // Now safe to use
+    badge_record.bump = ctx.bumps.badge_record;
+
+    Ok(())
+}
 
     pub fn mint_season_legacy_nft(
         ctx: Context<MintBadgeNFT>,
@@ -633,11 +660,14 @@ pub mod gamegambit {
         // Reset season high rank
         player_profile.season_high_rank = player_profile.rank;
         
+        // Clear seasonal badges
+        player_profile.seasonal_badges = 0;
+        
         Ok(())
     }
 }
 
-// Helper Structs - Move helper functions outside the program module
+// Helper Structs
 pub struct PlayerProfileHelpers;
 
 impl PlayerProfileHelpers {
@@ -650,11 +680,13 @@ impl PlayerProfileHelpers {
         performance: &PerformanceMetrics,
         current_time: i64,
     ) -> Result<()> {
-        // PROPER OpenSkill rating updates
+        // PROPER OpenSkill rating updates with anti-inflation
         let (new_mu_a, new_sigma_a, new_mu_b, new_sigma_b) = Self::calculate_openskill_update(
             player_a.mu, player_a.sigma, 
             player_b.mu, player_b.sigma, 
-            player_a_won
+            player_a_won,
+            player_a.matches_played,
+            player_b.matches_played,
         )?;
 
         // Apply rating updates
@@ -776,59 +808,103 @@ impl PlayerProfileHelpers {
         Ok(())
     }
 
-    // PROPER OpenSkill Implementation (Plackett-Luce model for 1v1)
     fn calculate_openskill_update(
         mu_a: f64, sigma_a: f64,
         mu_b: f64, sigma_b: f64,
         player_a_won: bool,
+        games_played_a: u32,
+        games_played_b: u32,
     ) -> Result<(f64, f64, f64, f64)> {
-        // OpenSkill constants
-        const TAU: f64 = 25.0 / 300.0; // Dynamics factor (prevents sigma from getting too small)
-        const EPSILON: f64 = 0.0001; // Numerical stability
+        // Proper OpenSkill constants based on research
+        const TAU: f64 = 25.0 / 300.0; // Additive dynamics factor (correct value)
+        const EPSILON: f64 = 0.0001; // Draw margin (for numerical stability)
+        const BETA: f64 = 25.0 / 6.0; // Skill difference factor (half of initial sigma)
         
-        // Add dynamic uncertainty based on time since last game (simplified)
-        let sigma_a_updated = (sigma_a.powi(2) + TAU.powi(2)).sqrt().max(2.0);
-        let sigma_b_updated = (sigma_b.powi(2) + TAU.powi(2)).sqrt().max(2.0);
+        // Anti-inflation: Add dynamics based on activity to prevent sigma decay
+        let tau_adjustment_a = Self::calculate_tau_adjustment(games_played_a);
+        let tau_adjustment_b = Self::calculate_tau_adjustment(games_played_b);
+        
+        // Update sigma with dynamics (prevents over-confidence)
+        let sigma_a_dyn = (sigma_a.powi(2) + (TAU * tau_adjustment_a).powi(2)).sqrt().max(1.0);
+        let sigma_b_dyn = (sigma_b.powi(2) + (TAU * tau_adjustment_b).powi(2)).sqrt().max(1.0);
 
-        // Calculate team strengths (sum of individual strengths for 1v1)
-        let c_a = (sigma_a_updated.powi(2)).sqrt();
-        let c_b = (sigma_b_updated.powi(2)).sqrt();
+        // Calculate collective team performance variance
+        let c_squared = sigma_a_dyn.powi(2) + sigma_b_dyn.powi(2) + 2.0 * BETA.powi(2);
+        let c = c_squared.sqrt();
         
-        // Calculate collective team strength
-        let c_total = (c_a.powi(2) + c_b.powi(2)).sqrt();
-        
-        // Calculate expected win probability using Plackett-Luce model
+        // Plackett-Luce probability calculation
         let mu_diff = mu_a - mu_b;
-        let expected_a = 1.0 / (1.0 + (-mu_diff / c_total).exp());
+        let expected_a = 1.0 / (1.0 + (-mu_diff / c).exp());
         
-        // Actual outcome (1.0 if player A won, 0.0 if player B won)
-        let actual_a = if player_a_won { 1.0 } else { 0.0 };
-        let actual_b = 1.0 - actual_a;
+        // Actual performance (1.0 for winner, 0.0 for loser)
+        let performance_a = if player_a_won { 1.0 } else { 0.0 };
+        let performance_b = 1.0 - performance_a;
         
-        // Calculate learning rate based on uncertainty
-        let learning_factor_a = (sigma_a_updated.powi(2)) / c_total.powi(2);
-        let learning_factor_b = (sigma_b_updated.powi(2)) / c_total.powi(2);
+        // Calculate v and w functions for Bayesian update
+        let v_a = expected_a * (1.0 - expected_a); // Variance
+        let w_a = v_a * ((performance_a - expected_a) / c); // Weight adjustment
         
-        // Update mu (skill estimates)
-        let mu_a_new = mu_a + learning_factor_a * c_total * (actual_a - expected_a);
-        let mu_b_new = mu_b + learning_factor_b * c_total * (actual_b - (1.0 - expected_a));
+        let v_b = (1.0 - expected_a) * expected_a; // Same as v_a for 1v1
+        let w_b = v_b * ((performance_b - (1.0 - expected_a)) / c);
         
-        // Update sigma (uncertainty) - decreases with more games
-        let sigma_reduction_factor = learning_factor_a * (expected_a * (1.0 - expected_a));
-        let sigma_a_new = (sigma_a_updated.powi(2) * (1.0 - sigma_reduction_factor)).sqrt()
-            .max(1.0) // Minimum uncertainty
-            .min(8.33); // Maximum uncertainty (25/3)
+        // Update mu (skill estimates) using proper Bayesian update
+        let mu_a_new = mu_a + (sigma_a_dyn.powi(2) / c) * w_a;
+        let mu_b_new = mu_b + (sigma_b_dyn.powi(2) / c) * w_b;
+        
+        // Update sigma (uncertainty) using proper variance reduction
+        let sigma_a_factor = 1.0 - (sigma_a_dyn.powi(2) / c_squared) * v_a;
+        let sigma_b_factor = 1.0 - (sigma_b_dyn.powi(2) / c_squared) * v_b;
+        
+        let sigma_a_new = (sigma_a_dyn.powi(2) * sigma_a_factor.max(0.1)).sqrt()
+            .max(1.0) // Minimum uncertainty to prevent overconfidence
+            .min(8.33); // Maximum uncertainty (initial value)
             
-        let sigma_reduction_factor_b = learning_factor_b * ((1.0 - expected_a) * expected_a);
-        let sigma_b_new = (sigma_b_updated.powi(2) * (1.0 - sigma_reduction_factor_b)).sqrt()
+        let sigma_b_new = (sigma_b_dyn.powi(2) * sigma_b_factor.max(0.1)).sqrt()
             .max(1.0)
             .min(8.33);
 
-        Ok((mu_a_new, sigma_a_new, mu_b_new, sigma_b_new))
+        // Anti-inflation: Apply rating compression for established players
+        let (mu_a_final, mu_b_final) = Self::apply_rating_compression(
+            mu_a_new, mu_b_new, games_played_a, games_played_b
+        );
+
+        Ok((mu_a_final, sigma_a_new, mu_b_final, sigma_b_new))
+    }
+    
+    fn calculate_tau_adjustment(games_played: u32) -> f64 {
+        match games_played {
+            0..=10 => 1.5,    // High uncertainty for new players
+            11..=50 => 1.2,   // Medium uncertainty for developing players
+            51..=200 => 1.0,  // Standard uncertainty for established players
+            _ => 0.8,         // Lower uncertainty for veteran players
+        }
+    }
+    
+    fn apply_rating_compression(
+        mu_a: f64, mu_b: f64, 
+        games_a: u32, games_b: u32
+    ) -> (f64, f64) {
+        const COMPRESSION_FACTOR: f64 = 0.999; // Very subtle compression (0.1% per game)
+        const COMPRESSION_THRESHOLD: u32 = 100; // Only apply after 100 games
+        
+        let compress_a = if games_a > COMPRESSION_THRESHOLD {
+            let excess = mu_a - 25.0; // Deviation from initial rating
+            mu_a - (excess * (1.0 - COMPRESSION_FACTOR))
+        } else {
+            mu_a
+        };
+        
+        let compress_b = if games_b > COMPRESSION_THRESHOLD {
+            let excess = mu_b - 25.0;
+            mu_b - (excess * (1.0 - COMPRESSION_FACTOR))
+        } else {
+            mu_b
+        };
+        
+        (compress_a, compress_b)
     }
 
     fn calculate_performance_bonus(performance: &PerformanceMetrics) -> u32 {
-        // Validate performance metrics to prevent exploits
         if performance.kills_deaths_ratio < 0.0 || performance.kills_deaths_ratio > 50.0 ||
            performance.accuracy_percent < 0.0 || performance.accuracy_percent > 100.0 ||
            performance.objectives_completed > 100 ||
@@ -889,7 +965,6 @@ impl PlayerProfileHelpers {
         if current_day > last_day {
             player.daily_matches_played = 0;
             player.last_daily_reset = current_time;
-            // Don't auto-increment login streak here - that should be in login function
         }
         
         player.daily_matches_played = player.daily_matches_played.saturating_add(1);
@@ -929,48 +1004,42 @@ impl PlayerProfileHelpers {
     }
 
     pub fn xp_to_rank(xp: u32) -> Rank {
-        // Adjusted XP thresholds to be more balanced
         match xp {
-            0..=399 => Rank::BronzeV,        // 0-399
-            400..=799 => Rank::BronzeIV,     // 400-799  
-            800..=1399 => Rank::BronzeIII,   // 800-1399
-            1400..=2199 => Rank::BronzeII,   // 1400-2199
-            2200..=3199 => Rank::BronzeI,    // 2200-3199
-            3200..=4399 => Rank::SilverV,    // 3200-4399
-            4400..=5799 => Rank::SilverIV,   // 4400-5799
-            5800..=7499 => Rank::SilverIII,  // 5800-7499
-            7500..=9499 => Rank::SilverII,   // 7500-9499
-            9500..=11999 => Rank::SilverI,   // 9500-11999
-            12000..=14999 => Rank::GoldV,    // 12000-14999
-            15000..=18499 => Rank::GoldIV,   // 15000-18499
-            18500..=22499 => Rank::GoldIII,  // 18500-22499
-            22500..=27499 => Rank::GoldII,   // 22500-27499
-            27500..=32999 => Rank::GoldI,    // 27500-32999
-            33000..=39499 => Rank::PlatinumV, // 33000-39499
-            39500..=46999 => Rank::PlatinumIV, // 39500-46999
-            47000..=55499 => Rank::PlatinumIII, // 47000-55499
-            55500..=65499 => Rank::PlatinumII, // 55500-65499
-            65500..=76999 => Rank::PlatinumI, // 65500-76999
-            77000..=90499 => Rank::DiamondV,  // 77000-90499
-            90500..=106499 => Rank::DiamondIV, // 90500-106499
-            106500..=124999 => Rank::DiamondIII, // 106500-124999
-            125000..=146999 => Rank::DiamondII, // 125000-146999
-            147000..=172999 => Rank::DiamondI, // 147000-172999
-            173000..=249999 => Rank::Master,  // 173000-249999
-            _ => Rank::Grandmaster,           // 250000+
+            0..=399 => Rank::BronzeV,
+            400..=799 => Rank::BronzeIV,
+            800..=1399 => Rank::BronzeIII,
+            1400..=2199 => Rank::BronzeII,
+            2200..=3199 => Rank::BronzeI,
+            3200..=4399 => Rank::SilverV,
+            4400..=5799 => Rank::SilverIV,
+            5800..=7499 => Rank::SilverIII,
+            7500..=9499 => Rank::SilverII,
+            9500..=11999 => Rank::SilverI,
+            12000..=14999 => Rank::GoldV,
+            15000..=18499 => Rank::GoldIV,
+            18500..=22499 => Rank::GoldIII,
+            22500..=27499 => Rank::GoldII,
+            27500..=32999 => Rank::GoldI,
+            33000..=39499 => Rank::PlatinumV,
+            39500..=46999 => Rank::PlatinumIV,
+            47000..=55499 => Rank::PlatinumIII,
+            55500..=65499 => Rank::PlatinumII,
+            65500..=76999 => Rank::PlatinumI,
+            77000..=90499 => Rank::DiamondV,
+            90500..=106499 => Rank::DiamondIV,
+            106500..=124999 => Rank::DiamondIII,
+            125000..=146999 => Rank::DiamondII,
+            147000..=172999 => Rank::DiamondI,
+            173000..=249999 => Rank::Master,
+            _ => Rank::Grandmaster,
         }
     }
 
-    // Helper function to get skill rating for matchmaking
     pub fn get_effective_rating(player: &PlayerProfile) -> f64 {
-        // Conservative rating estimate (mu - 3*sigma) for matchmaking
-        // This ensures newer players with high uncertainty don't get matched too high
         (player.mu - 3.0 * player.sigma).max(0.0)
     }
 
-    // Helper function to determine if a player is a "smurf" (experienced player on new account)
     pub fn detect_smurf_indicators(player: &PlayerProfile) -> bool {
-        // High performance with low games played
         let games_played = player.wins + player.losses;
         let win_rate = if games_played > 0 { 
             (player.wins as f64) / (games_played as f64) 
@@ -978,7 +1047,6 @@ impl PlayerProfileHelpers {
             0.0 
         };
         
-        // Potential smurf indicators
         games_played < 20 && win_rate > 0.8 && player.mu > 30.0
     }
 }
@@ -986,92 +1054,223 @@ impl PlayerProfileHelpers {
 pub struct BadgeHelpers;
 
 impl BadgeHelpers {
-    pub fn verify_badge_eligibility(player: &PlayerProfile, badge_type: &BadgeType) -> Result<()> {
+    pub fn verify_badge_eligibility(
+        player: &PlayerProfile, 
+        badge_type: &BadgeType,
+        current_time: i64
+    ) -> Result<()> {
+        // Check if already minted
+        if Self::is_badge_already_minted(player, badge_type) {
+            return err!(ErrorCode::BadgeAlreadyMinted);
+        }
+        
+        // Rate limiting: Prevent rapid badge farming
+        if current_time - player.last_badge_mint_time < 3600 {
+            return err!(ErrorCode::BadgeMintCooldown);
+        }
+        
+        // Enhanced eligibility checks with anti-gaming measures
         match badge_type {
             BadgeType::FirstBlood => {
                 if player.wins < 1 { return err!(ErrorCode::BadgeNotEarned); }
             },
             BadgeType::GambitSpark => {
-                if player.wins < 10 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.wins < 10 || player.matches_played < 15 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::VictoryVanguard => {
-                if player.wins < 50 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.wins < 50 || player.matches_played < 75 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::ConquerorsCrest => {
-                if player.wins < 100 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.wins < 100 || player.matches_played < 150 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::WarlordsWill => {
-                if player.wins < 250 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.wins < 250 || player.matches_played < 375 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::EmpireEternal => {
-                if player.wins < 500 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.wins < 500 || player.matches_played < 750 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::MythicMonarch => {
-                if player.wins < 1000 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.wins < 1000 || player.matches_played < 1500 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::LegendOfTheArena => {
-                if player.wins < 5000 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.wins < 5000 || player.matches_played < 7500 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::PhilanthropistsPride => {
-                if player.total_tipped < 2000 * 1_000_000_000 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.total_tipped < 2000 * 1_000_000_000 || 
+                   player.matches_played < 200 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::EternalEmperor => {
-                if player.max_streak < 50 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.max_streak < 50 || player.wins < 200 {
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::InvincibleIcon => {
-                if player.max_streak < 10 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.max_streak < 10 || player.matches_played < 30 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::StreakSoldier => {
-                if player.max_streak < 5 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.max_streak < 5 || player.matches_played < 15 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::ArenaAddict => {
-                if player.total_play_time < 360000 { return err!(ErrorCode::BadgeNotEarned); } // 100 hours
+                if player.total_play_time < 360000 || 
+                   player.matches_played < 500 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::TimelessTactician => {
-                if player.total_play_time < 3600000 { return err!(ErrorCode::BadgeNotEarned); } // 1000 hours
+                if player.total_play_time < 3600000 || 
+                   player.matches_played < 5000 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::GenerousGambiteer => {
-                if player.total_tipped < 25 * 1_000_000_000 { return err!(ErrorCode::BadgeNotEarned); } // 25 SOL
+                if player.total_tipped < 25 * 1_000_000_000 || 
+                   player.matches_played < 50 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::BenefactorsBounty => {
-                if player.total_tipped < 100 * 1_000_000_000 { return err!(ErrorCode::BadgeNotEarned); } // 100 SOL
+                if player.total_tipped < 100 * 1_000_000_000 || 
+                   player.matches_played < 100 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::MagnatesMark => {
-                if player.total_tipped < 500 * 1_000_000_000 { return err!(ErrorCode::BadgeNotEarned); } // 500 SOL
+                if player.total_tipped < 500 * 1_000_000_000 || 
+                   player.matches_played < 150 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::BronzeLeague => {
-                if player.rank < Rank::BronzeI { return err!(ErrorCode::BadgeNotEarned); }
+                if player.rank < Rank::BronzeI || player.matches_played < 10 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::SilverLeague => {
-                if player.rank < Rank::SilverI { return err!(ErrorCode::BadgeNotEarned); }
+                if player.rank < Rank::SilverI || player.matches_played < 50 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::GoldLeague => {
-                if player.rank < Rank::GoldI { return err!(ErrorCode::BadgeNotEarned); }
+                if player.rank < Rank::GoldI || player.matches_played < 100 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::PlatinumLeague => {
-                if player.rank < Rank::PlatinumI { return err!(ErrorCode::BadgeNotEarned); }
+                if player.rank < Rank::PlatinumI || player.matches_played < 200 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::DiamondLeague => {
-                if player.rank < Rank::DiamondI { return err!(ErrorCode::BadgeNotEarned); }
+                if player.rank < Rank::DiamondI || player.matches_played < 500 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::MasterLeague => {
-                if player.rank < Rank::Master { return err!(ErrorCode::BadgeNotEarned); }
+                if player.rank < Rank::Master || player.matches_played < 750 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::GrandmasterLeague => {
-                if player.rank < Rank::Grandmaster { return err!(ErrorCode::BadgeNotEarned); }
+                if player.rank < Rank::Grandmaster || 
+                   player.matches_played < 1000 || 
+                   player.mu < 45.0 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::DailyDuelist => {
-                if player.current_daily_login_streak < 5 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.current_daily_login_streak < 5 || 
+                   player.matches_played < 20 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::WeeklyWarrior => {
-                if player.matches_played < 28 { return err!(ErrorCode::BadgeNotEarned); } // 4 weeks of daily play
+                if player.matches_played < 28 || 
+                   player.weekly_matches < 28 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             BadgeType::RampageRookie => {
-                if player.max_streak < 3 { return err!(ErrorCode::BadgeNotEarned); }
+                if player.max_streak < 3 || player.matches_played < 10 { 
+                    return err!(ErrorCode::BadgeNotEarned); 
+                }
             },
             _ => {},
         }
         Ok(())
+    }
+
+    pub fn is_badge_already_minted(player: &PlayerProfile, badge_type: &BadgeType) -> bool {
+        let badge_index = Self::badge_type_to_index(badge_type);
+        if badge_index >= 128 {
+            return false; // Invalid badge type
+        }
+        
+        (player.badges_minted & (1u128 << badge_index)) != 0
+    }
+    
+    pub fn mark_badge_minted(player: &mut PlayerProfile, badge_type: &BadgeType) -> Result<()> {
+        let badge_index = Self::badge_type_to_index(badge_type);
+        if badge_index >= 128 {
+            return err!(ErrorCode::InvalidBadgeType);
+        }
+        
+        player.badges_minted |= 1u128 << badge_index;
+        player.badges_earned += 1;
+        Ok(())
+    }
+    
+    fn badge_type_to_index(badge_type: &BadgeType) -> u8 {
+        match badge_type {
+            BadgeType::FirstBlood => 0,
+            BadgeType::GambitSpark => 1,
+            BadgeType::VictoryVanguard => 2,
+            BadgeType::ConquerorsCrest => 3,
+            BadgeType::WarlordsWill => 4,
+            BadgeType::EmpireEternal => 5,
+            BadgeType::MythicMonarch => 6,
+            BadgeType::LegendOfTheArena => 7,
+            BadgeType::BronzeLeague => 8,
+            BadgeType::SilverLeague => 9,
+            BadgeType::GoldLeague => 10,
+            BadgeType::PlatinumLeague => 11,
+            BadgeType::DiamondLeague => 12,
+            BadgeType::MasterLeague => 13,
+            BadgeType::GrandmasterLeague => 14,
+            BadgeType::PhilanthropistsPride => 15,
+            BadgeType::EternalEmperor => 16,
+            BadgeType::InvincibleIcon => 17,
+            BadgeType::StreakSoldier => 18,
+            BadgeType::ArenaAddict => 19,
+            BadgeType::TimelessTactician => 20,
+            BadgeType::GenerousGambiteer => 21,
+            BadgeType::BenefactorsBounty => 22,
+            BadgeType::MagnatesMark => 23,
+            BadgeType::DailyDuelist => 24,
+            BadgeType::WeeklyWarrior => 25,
+            BadgeType::RampageRookie => 26,
+            BadgeType::SeasonLegacy => 27,
+            _ => 127,
+        }
     }
 
     pub fn get_badge_rarity(badge_type: &BadgeType) -> BadgeRarity {
@@ -1104,8 +1303,6 @@ impl BadgeHelpers {
     }
 
     pub fn check_tipping_badges(_tipper: &mut PlayerProfile, _recipient: &mut PlayerProfile) -> Result<()> {
-        // Check various tipping milestones and award badges accordingly
-        // This would trigger badge minting in a separate transaction
         Ok(())
     }
 }
@@ -1131,14 +1328,14 @@ pub struct InitializePlayer<'info> {
     #[account(
         init_if_needed,
         payer = authority,
-        space = 8 + 32 + 8 + 8 + 4 + 1 + 4 + 4 + 4 + 4 + 8 + 8 + 4 + 4 + 1 + 8 + 8 + 4 + 4 + 1 + 8 + 1,
+        space = 8 + 32 + 8 + 8 + 4 + 1 + 4 + 4 + 4 + 4 + 8 + 8 + 4 + 4 + 1 + 8 + 8 + 4 + 4 + 1 + 8 + 1 + 16 + 8 + 8,
         seeds = [b"player_profile", player.key().as_ref()],
         bump
     )]
     pub player_profile: Account<'info, PlayerProfile>,
     #[account(mut)]
     pub platform_config: Account<'info, PlatformConfig>,
-    pub player: Signer<'info>, // Must be signer to prevent account takeover
+    pub player: Signer<'info>,
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -1147,9 +1344,9 @@ pub struct InitializePlayer<'info> {
 #[derive(Accounts)]
 pub struct CreatePlayerProfile<'info> {
     #[account(
-        init,  // Use init instead of init_if_needed for atomic creation
+        init,
         payer = authority,
-        space = 8 + 32 + 8 + 8 + 4 + 1 + 4 + 4 + 4 + 4 + 8 + 8 + 4 + 4 + 1 + 8 + 8 + 4 + 4 + 1 + 8 + 1,
+        space = 8 + 32 + 8 + 8 + 4 + 1 + 4 + 4 + 4 + 4 + 8 + 8 + 4 + 4 + 1 + 8 + 8 + 4 + 4 + 1 + 8 + 1 + 16 + 8 + 8,
         seeds = [b"player_profile", player.key().as_ref()],
         bump
     )]
@@ -1267,6 +1464,7 @@ pub struct TipPlayer<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(badge_type: BadgeType)]
 pub struct MintBadgeNFT<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -1274,6 +1472,24 @@ pub struct MintBadgeNFT<'info> {
     pub player: Signer<'info>,
     #[account(mut)]
     pub player_profile: Account<'info, PlayerProfile>,
+    #[account(mut)]
+    pub platform_config: Account<'info, PlatformConfig>,
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + 32 + 1 + 32 + 8 + 8 + 4 + 200 + 1,
+        seeds = [b"badge_record", player.key().as_ref(), &[BadgeHelpers::badge_type_to_index(&badge_type)]],
+        bump
+    )]
+    pub badge_record: Account<'info, BadgeRecord>,
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 8 + 32 + 8 + 4 * 128 + 1,
+        seeds = [b"badge_registry"],
+        bump
+    )]
+    pub badge_registry: Account<'info, BadgeRegistry>,
     #[account(mut)]
     pub mint: Account<'info, Mint>,
     #[account(mut)]
@@ -1373,33 +1589,55 @@ pub struct EscrowState {
 #[account]
 pub struct PlayerProfile {
     pub player: Pubkey,
-    pub mu: f64,                    // OpenSkill rating
-    pub sigma: f64,                 // OpenSkill uncertainty
-    pub xp: u32,                   // Experience points for ranking
-    pub rank: Rank,                // Current rank
+    pub mu: f64,
+    pub sigma: f64,
+    pub xp: u32,
+    pub rank: Rank,
     pub wins: u32,
     pub losses: u32,
     pub current_streak: u32,
     pub max_streak: u32,
-    pub total_wagered: u64,        // Total SOL wagered
-    pub total_tipped: u64,         // Total SOL tipped to others
-    pub total_play_time: u32,      // Total seconds played
+    pub total_wagered: u64,
+    pub total_tipped: u64,
+    pub total_play_time: u32,
     pub matches_played: u32,
-    pub season_high_rank: Rank,    // Highest rank this season
+    pub season_high_rank: Rank,
     pub created_at: i64,
     pub last_active: i64,
-    pub prestige_score: u32,       // Points from NFT badges
-    pub badges_earned: u32,        // Total badges collected
+    pub prestige_score: u32,
+    pub badges_earned: u32,
     pub is_banned: bool,
     pub ban_expires_at: i64,
     pub bump: u8,
-    pub daily_matches_played: u32,     // Reset daily
-    pub last_daily_reset: i64,         // Track daily reset
-    pub challenges_completed: u32,     // Total challenges completed
-    pub current_daily_login_streak: u32, // Daily login streak
-    pub season_challenges: u64,        // Bitfield for season challenges
-    pub weekly_matches: u32,           // Reset weekly
-    pub last_weekly_reset: i64,        // Track weekly reset
+    pub daily_matches_played: u32,
+    pub last_daily_reset: i64,
+    pub challenges_completed: u32,
+    pub current_daily_login_streak: u32,
+    pub season_challenges: u64,
+    pub weekly_matches: u32,
+    pub last_weekly_reset: i64,
+    pub badges_minted: u128,
+    pub seasonal_badges: u64,
+    pub last_badge_mint_time: i64,
+}
+
+#[account]
+pub struct BadgeRegistry {
+    pub authority: Pubkey,
+    pub total_badges_minted: u64,
+    pub badge_type_counts: [u32; 128],
+    pub bump: u8,
+}
+
+#[account]
+pub struct BadgeRecord {
+    pub player: Pubkey,
+    pub badge_type: BadgeType,
+    pub mint: Pubkey,
+    pub minted_at: i64,
+    pub season_earned: u64,
+    pub metadata_uri: String,
+    pub bump: u8,
 }
 
 // Enums
@@ -1613,4 +1851,12 @@ pub enum ErrorCode {
     InvalidPerformanceMetrics,
     #[msg("Already logged in today")]
     AlreadyLoggedInToday,
+    #[msg("Badge has already been minted for this player")]
+    BadgeAlreadyMinted,
+    #[msg("Badge minting is on cooldown")]
+    BadgeMintCooldown,
+    #[msg("Invalid badge type")]
+    InvalidBadgeType,
+    #[msg("Insufficient matches played for this badge")]
+    InsufficientMatchesForBadge,
 }
