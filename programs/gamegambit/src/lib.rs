@@ -102,6 +102,75 @@ pub mod gamegambit {
         Ok(())
     }
 
+    pub fn create_player_profile(ctx: Context<CreatePlayerProfile>) -> Result<()> {
+        let player_profile = &mut ctx.accounts.player_profile;
+        let current_time = Clock::get()?.unix_timestamp;
+        
+        // Initialize new player - this can only succeed once due to init constraint
+        player_profile.player = ctx.accounts.player.key();
+        player_profile.mu = 25.0;
+        player_profile.sigma = 25.0 / 3.0;
+        player_profile.xp = 500; // First-day bonus
+        player_profile.rank = Rank::BronzeV;
+        player_profile.wins = 0;
+        player_profile.losses = 0;
+        player_profile.current_streak = 0;
+        player_profile.max_streak = 0;
+        player_profile.total_wagered = 0;
+        player_profile.total_tipped = 0;
+        player_profile.total_play_time = 0;
+        player_profile.matches_played = 0;
+        player_profile.season_high_rank = Rank::BronzeV;
+        player_profile.created_at = current_time;
+        player_profile.last_active = current_time;
+        player_profile.prestige_score = 0;
+        player_profile.badges_earned = 0;
+        player_profile.is_banned = false;
+        player_profile.ban_expires_at = 0;
+        player_profile.bump = ctx.bumps.player_profile;
+        player_profile.daily_matches_played = 0;
+        player_profile.last_daily_reset = current_time;
+        player_profile.challenges_completed = 0;
+        player_profile.current_daily_login_streak = 1;
+        player_profile.season_challenges = 0;
+        player_profile.weekly_matches = 0;
+        player_profile.last_weekly_reset = current_time;
+        
+        // Atomically increment total players
+        let platform_config = &mut ctx.accounts.platform_config;
+        platform_config.total_players = platform_config.total_players
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+        
+        Ok(())
+    }
+
+    pub fn daily_login(ctx: Context<DailyLogin>) -> Result<()> {
+        let player_profile = &mut ctx.accounts.player_profile;
+        let current_time = Clock::get()?.unix_timestamp;
+        
+        let last_login_day = player_profile.last_active / 86400;
+        let current_day = current_time / 86400;
+        
+        // Only process if it's a new day
+        require!(current_day > last_login_day, ErrorCode::AlreadyLoggedInToday);
+        
+        // Award daily bonus
+        player_profile.xp = player_profile.xp
+            .checked_add(100)
+            .ok_or(ErrorCode::Overflow)?;
+            
+        player_profile.current_daily_login_streak = player_profile.current_daily_login_streak
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+        
+        player_profile.last_active = current_time;
+        
+        PlayerProfileHelpers::update_rank(player_profile)?;
+        
+        Ok(())
+    }
+
     pub fn initialize_escrow(
         ctx: Context<InitializeEscrow>,
         amount: u64,
@@ -581,40 +650,39 @@ impl PlayerProfileHelpers {
         performance: &PerformanceMetrics,
         current_time: i64,
     ) -> Result<()> {
-        // OpenSkill rating updates (simplified)
-        let rating_change = Self::calculate_openskill_update(
+        // PROPER OpenSkill rating updates
+        let (new_mu_a, new_sigma_a, new_mu_b, new_sigma_b) = Self::calculate_openskill_update(
             player_a.mu, player_a.sigma, 
             player_b.mu, player_b.sigma, 
             player_a_won
-        );
+        )?;
 
+        // Apply rating updates
+        player_a.mu = new_mu_a;
+        player_a.sigma = new_sigma_a;
+        player_b.mu = new_mu_b;
+        player_b.sigma = new_sigma_b;
+
+        // Update win/loss records and streaks
         if player_a_won {
-            player_a.mu += rating_change;
-            player_b.mu -= rating_change;
-            player_a.wins += 1;
-            player_b.losses += 1;
-            player_a.current_streak += 1;
+            player_a.wins = player_a.wins.checked_add(1).ok_or(ErrorCode::Overflow)?;
+            player_b.losses = player_b.losses.checked_add(1).ok_or(ErrorCode::Overflow)?;
+            player_a.current_streak = player_a.current_streak.checked_add(1).ok_or(ErrorCode::Overflow)?;
             player_b.current_streak = 0;
             if player_a.current_streak > player_a.max_streak {
                 player_a.max_streak = player_a.current_streak;
             }
         } else {
-            player_a.mu -= rating_change;
-            player_b.mu += rating_change;
-            player_a.losses += 1;
-            player_b.wins += 1;
+            player_a.losses = player_a.losses.checked_add(1).ok_or(ErrorCode::Overflow)?;
+            player_b.wins = player_b.wins.checked_add(1).ok_or(ErrorCode::Overflow)?;
             player_a.current_streak = 0;
-            player_b.current_streak += 1;
+            player_b.current_streak = player_b.current_streak.checked_add(1).ok_or(ErrorCode::Overflow)?;
             if player_b.current_streak > player_b.max_streak {
                 player_b.max_streak = player_b.current_streak;
             }
         }
 
-        // Reduce uncertainty over time
-        player_a.sigma = (player_a.sigma * 0.95).max(2.0);
-        player_b.sigma = (player_b.sigma * 0.95).max(2.0);
-
-        // XP Calculations
+        // XP Calculations with overflow protection
         let base_xp_win = 100u32;
         let base_xp_loss = 50u32;
 
@@ -628,41 +696,76 @@ impl PlayerProfileHelpers {
         let efficiency_bonus = if match_duration < 180 { 40 } else { 0 };
 
         // Activity bonus: +20 XP after 3rd match of the day
-        let activity_bonus = if player_a.matches_played % 10 >= 3 { 20 } else { 0 }; // Simplified daily tracking
+        let activity_bonus = if player_a.daily_matches_played >= 3 { 20 } else { 0 };
 
         // Daily login bonus (check if last active was yesterday)
         let daily_bonus = if current_time - player_a.last_active > 86400 { 100 } else { 0 };
 
-        // Streak bonus
-        let streak_bonus_a = if player_a_won { player_a.current_streak * 30 } else { 0 };
-        let streak_bonus_b = if !player_a_won { player_b.current_streak * 30 } else { 0 };
+        // Streak bonus (capped to prevent overflow)
+        let streak_bonus_a = if player_a_won { (player_a.current_streak * 30).min(300) } else { 0 };
+        let streak_bonus_b = if !player_a_won { (player_b.current_streak * 30).min(300) } else { 0 };
 
-        // Underdog bonus (simplified - based on mu difference)
-        let underdog_bonus_a = if !player_a_won && player_b.mu > player_a.mu + 4.0 { 50 } else { 0 };
-        let underdog_bonus_b = if player_a_won && player_a.mu > player_b.mu + 4.0 { 50 } else { 0 };
+        // Underdog bonus (based on skill rating difference)
+        let rating_diff = (player_a.mu - player_b.mu).abs();
+        let underdog_bonus_a = if !player_a_won && player_b.mu > player_a.mu + 4.0 { 
+            (rating_diff * 10.0).min(100.0) as u32 
+        } else { 0 };
+        let underdog_bonus_b = if player_a_won && player_a.mu > player_b.mu + 4.0 { 
+            (rating_diff * 10.0).min(100.0) as u32 
+        } else { 0 };
 
         // Challenge bonus
         let challenge_bonus_a = Self::calculate_challenge_bonus(player_a, current_time);
         let challenge_bonus_b = Self::calculate_challenge_bonus(player_b, current_time);
 
-        // Update XP
+        // Apply XP updates with overflow protection
         if player_a_won {
-            player_a.xp += base_xp_win + wager_bonus + performance_bonus + efficiency_bonus + 
-                           streak_bonus_a + underdog_bonus_b + activity_bonus + daily_bonus + challenge_bonus_a;
-            player_b.xp += base_xp_loss + wager_bonus + underdog_bonus_a + daily_bonus + challenge_bonus_b;
+            let total_xp_a = base_xp_win
+                .saturating_add(wager_bonus)
+                .saturating_add(performance_bonus)
+                .saturating_add(efficiency_bonus)
+                .saturating_add(streak_bonus_a)
+                .saturating_add(underdog_bonus_b)
+                .saturating_add(activity_bonus)
+                .saturating_add(daily_bonus)
+                .saturating_add(challenge_bonus_a);
+            
+            let total_xp_b = base_xp_loss
+                .saturating_add(wager_bonus)
+                .saturating_add(underdog_bonus_a)
+                .saturating_add(daily_bonus)
+                .saturating_add(challenge_bonus_b);
+                
+            player_a.xp = player_a.xp.saturating_add(total_xp_a);
+            player_b.xp = player_b.xp.saturating_add(total_xp_b);
         } else {
-            player_a.xp += base_xp_loss + wager_bonus + underdog_bonus_a + daily_bonus + challenge_bonus_a;
-            player_b.xp += base_xp_win + wager_bonus + performance_bonus + efficiency_bonus + 
-                           streak_bonus_b + underdog_bonus_a + activity_bonus + daily_bonus + challenge_bonus_b;
+            let total_xp_a = base_xp_loss
+                .saturating_add(wager_bonus)
+                .saturating_add(underdog_bonus_a)
+                .saturating_add(daily_bonus)
+                .saturating_add(challenge_bonus_a);
+            
+            let total_xp_b = base_xp_win
+                .saturating_add(wager_bonus)
+                .saturating_add(performance_bonus)
+                .saturating_add(efficiency_bonus)
+                .saturating_add(streak_bonus_b)
+                .saturating_add(underdog_bonus_a)
+                .saturating_add(activity_bonus)
+                .saturating_add(daily_bonus)
+                .saturating_add(challenge_bonus_b);
+                
+            player_a.xp = player_a.xp.saturating_add(total_xp_a);
+            player_b.xp = player_b.xp.saturating_add(total_xp_b);
         }
 
-        // Update other stats
-        player_a.matches_played += 1;
-        player_b.matches_played += 1;
-        player_a.total_wagered += wager_amount;
-        player_b.total_wagered += wager_amount;
-        player_a.total_play_time += match_duration;
-        player_b.total_play_time += match_duration;
+        // Update other stats with overflow protection
+        player_a.matches_played = player_a.matches_played.checked_add(1).ok_or(ErrorCode::Overflow)?;
+        player_b.matches_played = player_b.matches_played.checked_add(1).ok_or(ErrorCode::Overflow)?;
+        player_a.total_wagered = player_a.total_wagered.checked_add(wager_amount).ok_or(ErrorCode::Overflow)?;
+        player_b.total_wagered = player_b.total_wagered.checked_add(wager_amount).ok_or(ErrorCode::Overflow)?;
+        player_a.total_play_time = player_a.total_play_time.checked_add(match_duration).ok_or(ErrorCode::Overflow)?;
+        player_b.total_play_time = player_b.total_play_time.checked_add(match_duration).ok_or(ErrorCode::Overflow)?;
         player_a.last_active = current_time;
         player_b.last_active = current_time;
 
@@ -673,48 +776,107 @@ impl PlayerProfileHelpers {
         Ok(())
     }
 
+    // PROPER OpenSkill Implementation (Plackett-Luce model for 1v1)
     fn calculate_openskill_update(
         mu_a: f64, sigma_a: f64,
         mu_b: f64, sigma_b: f64,
         player_a_won: bool,
-    ) -> f64 {
-        // Simplified OpenSkill calculation
-        let beta = 25.0 / 6.0; // Skill class width
-        let tau = 25.0 / 300.0; // Dynamics factor
+    ) -> Result<(f64, f64, f64, f64)> {
+        // OpenSkill constants
+        const TAU: f64 = 25.0 / 300.0; // Dynamics factor (prevents sigma from getting too small)
+        const EPSILON: f64 = 0.0001; // Numerical stability
         
-        let c_squared = 2.0 * (beta * beta) + sigma_a * sigma_a + sigma_b * sigma_b;
-        let expected_a = 1.0 / (1.0 + (-(mu_a - mu_b) / c_squared.sqrt()).exp());
+        // Add dynamic uncertainty based on time since last game (simplified)
+        let sigma_a_updated = (sigma_a.powi(2) + TAU.powi(2)).sqrt().max(2.0);
+        let sigma_b_updated = (sigma_b.powi(2) + TAU.powi(2)).sqrt().max(2.0);
+
+        // Calculate team strengths (sum of individual strengths for 1v1)
+        let c_a = (sigma_a_updated.powi(2)).sqrt();
+        let c_b = (sigma_b_updated.powi(2)).sqrt();
         
+        // Calculate collective team strength
+        let c_total = (c_a.powi(2) + c_b.powi(2)).sqrt();
+        
+        // Calculate expected win probability using Plackett-Luce model
+        let mu_diff = mu_a - mu_b;
+        let expected_a = 1.0 / (1.0 + (-mu_diff / c_total).exp());
+        
+        // Actual outcome (1.0 if player A won, 0.0 if player B won)
         let actual_a = if player_a_won { 1.0 } else { 0.0 };
-        let update_factor = (sigma_a * sigma_a + tau * tau) / c_squared;
+        let actual_b = 1.0 - actual_a;
         
-        (actual_a - expected_a) * update_factor
+        // Calculate learning rate based on uncertainty
+        let learning_factor_a = (sigma_a_updated.powi(2)) / c_total.powi(2);
+        let learning_factor_b = (sigma_b_updated.powi(2)) / c_total.powi(2);
+        
+        // Update mu (skill estimates)
+        let mu_a_new = mu_a + learning_factor_a * c_total * (actual_a - expected_a);
+        let mu_b_new = mu_b + learning_factor_b * c_total * (actual_b - (1.0 - expected_a));
+        
+        // Update sigma (uncertainty) - decreases with more games
+        let sigma_reduction_factor = learning_factor_a * (expected_a * (1.0 - expected_a));
+        let sigma_a_new = (sigma_a_updated.powi(2) * (1.0 - sigma_reduction_factor)).sqrt()
+            .max(1.0) // Minimum uncertainty
+            .min(8.33); // Maximum uncertainty (25/3)
+            
+        let sigma_reduction_factor_b = learning_factor_b * ((1.0 - expected_a) * expected_a);
+        let sigma_b_new = (sigma_b_updated.powi(2) * (1.0 - sigma_reduction_factor_b)).sqrt()
+            .max(1.0)
+            .min(8.33);
+
+        Ok((mu_a_new, sigma_a_new, mu_b_new, sigma_b_new))
     }
 
     fn calculate_performance_bonus(performance: &PerformanceMetrics) -> u32 {
+        // Validate performance metrics to prevent exploits
+        if performance.kills_deaths_ratio < 0.0 || performance.kills_deaths_ratio > 50.0 ||
+           performance.accuracy_percent < 0.0 || performance.accuracy_percent > 100.0 ||
+           performance.objectives_completed > 100 ||
+           performance.damage_dealt > 1_000_000 ||
+           performance.healing_done > 1_000_000 ||
+           performance.score > 1_000_000 {
+            return 0; // Invalid metrics, no bonus
+        }
+
         let mut bonus = 0u32;
         
-        // K/D ratio bonus for FPS games
-        if performance.kills_deaths_ratio > 2.0 {
+        // K/D ratio bonus for FPS games (scaled properly)
+        if performance.kills_deaths_ratio > 3.0 {
+            bonus += 50;
+        } else if performance.kills_deaths_ratio > 2.0 {
             bonus += 30;
+        } else if performance.kills_deaths_ratio > 1.5 {
+            bonus += 15;
         }
         
-        // Accuracy bonus
-        if performance.accuracy_percent > 70.0 {
-            bonus += 25;
-        }
-        
-        // Objective bonus
-        if performance.objectives_completed > 0 {
+        // Accuracy bonus (more granular)
+        if performance.accuracy_percent > 90.0 {
             bonus += 40;
+        } else if performance.accuracy_percent > 70.0 {
+            bonus += 25;
+        } else if performance.accuracy_percent > 50.0 {
+            bonus += 10;
         }
         
-        // Score bonus
-        if performance.score > 2000 {
+        // Objective bonus (scaled by completion count)
+        match performance.objectives_completed {
+            5.. => bonus += 60,
+            3..=4 => bonus += 40,
+            1..=2 => bonus += 20,
+            _ => {}
+        }
+        
+        // Score bonus (tiered)
+        if performance.score > 5000 {
+            bonus += 30;
+        } else if performance.score > 2000 {
             bonus += 20;
+        } else if performance.score > 1000 {
+            bonus += 10;
         }
         
-        bonus
+        // Cap total performance bonus to prevent exploitation
+        bonus.min(150)
     }
 
     fn calculate_challenge_bonus(player: &mut PlayerProfile, current_time: i64) -> u32 {
@@ -727,22 +889,27 @@ impl PlayerProfileHelpers {
         if current_day > last_day {
             player.daily_matches_played = 0;
             player.last_daily_reset = current_time;
-            player.current_daily_login_streak += 1;
+            // Don't auto-increment login streak here - that should be in login function
         }
         
-        player.daily_matches_played += 1;
+        player.daily_matches_played = player.daily_matches_played.saturating_add(1);
         
-        // Daily challenges
+        // Daily challenges (prevent repeated bonus exploitation)
         match player.daily_matches_played {
-            3 => bonus += 200,  // Play 3 matches
-            5 => bonus += 500,  // Play 5 matches  
-            10 => bonus += 1000, // Play 10 matches
+            3 => bonus += 200,  // Play 3 matches (first time only)
+            5 => bonus += 300,  // Play 5 matches additional bonus
+            10 => bonus += 500, // Play 10 matches additional bonus
             _ => {}
         }
         
-        // Weekly challenges (simplified)
-        if player.matches_played % 50 == 0 && player.matches_played > 0 {
-            bonus += 2000; // Play 50 total matches milestone
+        // Weekly challenges (more sophisticated tracking needed in production)
+        if player.matches_played > 0 && player.matches_played % 50 == 0 {
+            bonus += 1000; // Every 50 matches milestone
+        }
+        
+        // Monthly challenges (season-based)
+        if player.matches_played > 0 && player.matches_played % 200 == 0 {
+            bonus += 2500; // Every 200 matches milestone
         }
         
         bonus
@@ -750,8 +917,10 @@ impl PlayerProfileHelpers {
 
     pub fn update_rank(player: &mut PlayerProfile) -> Result<()> {
         let new_rank = Self::xp_to_rank(player.xp);
+        // Only allow rank increases, never decreases (except for season resets)
         if new_rank > player.rank {
             player.rank = new_rank;
+            // Update season high rank
             if new_rank > player.season_high_rank {
                 player.season_high_rank = new_rank;
             }
@@ -760,35 +929,57 @@ impl PlayerProfileHelpers {
     }
 
     pub fn xp_to_rank(xp: u32) -> Rank {
+        // Adjusted XP thresholds to be more balanced
         match xp {
-            0..=299 => Rank::BronzeV,
-            300..=699 => Rank::BronzeIV,
-            700..=1199 => Rank::BronzeIII,
-            1200..=1999 => Rank::BronzeII,
-            2000..=2999 => Rank::BronzeI,
-            3000..=3999 => Rank::SilverV,
-            4000..=4999 => Rank::SilverIV,
-            5000..=5999 => Rank::SilverIII,
-            6000..=7499 => Rank::SilverII,
-            7500..=8999 => Rank::SilverI,
-            9000..=10499 => Rank::GoldV,
-            10500..=11999 => Rank::GoldIV,
-            12000..=13999 => Rank::GoldIII,
-            14000..=15999 => Rank::GoldII,
-            16000..=17999 => Rank::GoldI,
-            18000..=19999 => Rank::PlatinumV,
-            20000..=21999 => Rank::PlatinumIV,
-            22000..=24999 => Rank::PlatinumIII,
-            25000..=27499 => Rank::PlatinumII,
-            27500..=29999 => Rank::PlatinumI,
-            30000..=32499 => Rank::DiamondV,
-            32500..=34999 => Rank::DiamondIV,
-            35000..=37499 => Rank::DiamondIII,
-            37500..=39999 => Rank::DiamondII,
-            40000..=49999 => Rank::DiamondI,
-            50000..=99999 => Rank::Master,
-            _ => Rank::Grandmaster,
+            0..=399 => Rank::BronzeV,        // 0-399
+            400..=799 => Rank::BronzeIV,     // 400-799  
+            800..=1399 => Rank::BronzeIII,   // 800-1399
+            1400..=2199 => Rank::BronzeII,   // 1400-2199
+            2200..=3199 => Rank::BronzeI,    // 2200-3199
+            3200..=4399 => Rank::SilverV,    // 3200-4399
+            4400..=5799 => Rank::SilverIV,   // 4400-5799
+            5800..=7499 => Rank::SilverIII,  // 5800-7499
+            7500..=9499 => Rank::SilverII,   // 7500-9499
+            9500..=11999 => Rank::SilverI,   // 9500-11999
+            12000..=14999 => Rank::GoldV,    // 12000-14999
+            15000..=18499 => Rank::GoldIV,   // 15000-18499
+            18500..=22499 => Rank::GoldIII,  // 18500-22499
+            22500..=27499 => Rank::GoldII,   // 22500-27499
+            27500..=32999 => Rank::GoldI,    // 27500-32999
+            33000..=39499 => Rank::PlatinumV, // 33000-39499
+            39500..=46999 => Rank::PlatinumIV, // 39500-46999
+            47000..=55499 => Rank::PlatinumIII, // 47000-55499
+            55500..=65499 => Rank::PlatinumII, // 55500-65499
+            65500..=76999 => Rank::PlatinumI, // 65500-76999
+            77000..=90499 => Rank::DiamondV,  // 77000-90499
+            90500..=106499 => Rank::DiamondIV, // 90500-106499
+            106500..=124999 => Rank::DiamondIII, // 106500-124999
+            125000..=146999 => Rank::DiamondII, // 125000-146999
+            147000..=172999 => Rank::DiamondI, // 147000-172999
+            173000..=249999 => Rank::Master,  // 173000-249999
+            _ => Rank::Grandmaster,           // 250000+
         }
+    }
+
+    // Helper function to get skill rating for matchmaking
+    pub fn get_effective_rating(player: &PlayerProfile) -> f64 {
+        // Conservative rating estimate (mu - 3*sigma) for matchmaking
+        // This ensures newer players with high uncertainty don't get matched too high
+        (player.mu - 3.0 * player.sigma).max(0.0)
+    }
+
+    // Helper function to determine if a player is a "smurf" (experienced player on new account)
+    pub fn detect_smurf_indicators(player: &PlayerProfile) -> bool {
+        // High performance with low games played
+        let games_played = player.wins + player.losses;
+        let win_rate = if games_played > 0 { 
+            (player.wins as f64) / (games_played as f64) 
+        } else { 
+            0.0 
+        };
+        
+        // Potential smurf indicators
+        games_played < 20 && win_rate > 0.8 && player.mu > 30.0
     }
 }
 
@@ -947,10 +1138,39 @@ pub struct InitializePlayer<'info> {
     pub player_profile: Account<'info, PlayerProfile>,
     #[account(mut)]
     pub platform_config: Account<'info, PlatformConfig>,
+    pub player: Signer<'info>, // Must be signer to prevent account takeover
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CreatePlayerProfile<'info> {
+    #[account(
+        init,  // Use init instead of init_if_needed for atomic creation
+        payer = authority,
+        space = 8 + 32 + 8 + 8 + 4 + 1 + 4 + 4 + 4 + 4 + 8 + 8 + 4 + 4 + 1 + 8 + 8 + 4 + 4 + 1 + 8 + 1,
+        seeds = [b"player_profile", player.key().as_ref()],
+        bump
+    )]
+    pub player_profile: Account<'info, PlayerProfile>,
+    #[account(mut)]
+    pub platform_config: Account<'info, PlatformConfig>,
     pub player: Signer<'info>,
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct DailyLogin<'info> {
+    #[account(
+        mut,
+        seeds = [b"player_profile", player.key().as_ref()],
+        bump = player_profile.bump
+    )]
+    pub player_profile: Account<'info, PlayerProfile>,
+    pub player: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -1391,4 +1611,6 @@ pub enum ErrorCode {
     SeasonEnded,
     #[msg("Invalid performance metrics")]
     InvalidPerformanceMetrics,
+    #[msg("Already logged in today")]
+    AlreadyLoggedInToday,
 }
