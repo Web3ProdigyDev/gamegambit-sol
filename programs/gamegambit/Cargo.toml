@@ -1,7 +1,7 @@
 [package]
 name = "gamegambit"
 version = "0.1.0"
-description = "Created with Anchor"
+description = "Game Gambit Smart Contract"
 edition = "2021"
 
 [lib]
@@ -15,7 +15,7 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
-anchor-debug = []  
+anchor-debug = []
 
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
