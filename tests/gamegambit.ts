@@ -108,29 +108,33 @@ describe("gamegambit", () => {
     return txId;
   };
 
-  const tryCloseWager = async (wagerPDA: PublicKey, playerA: PublicKey, playerB: PublicKey, description: string) => {
-    if (playerB.equals(PublicKey.default)) {
-      console.log(`ℹ️  Skipping player_b transfer in ${description} (not joined)`);
+const tryCloseWager = async (wagerPDA: PublicKey, playerA: PublicKey, playerB: PublicKey, description: string) => {
+  try {
+    // Check if wager account exists
+    const wagerAccountInfo = await provider.connection.getAccountInfo(wagerPDA);
+    if (!wagerAccountInfo) {
+      console.log(`ℹ️  Skipping ${description}: Wager account ${wagerPDA.toBase58()} does not exist`);
+      return;
     }
-    try {
-      await executeAndLogTx(
-        program.methods
-          .closeWager()
-          .accounts({
-            wager: wagerPDA,
-            playerA,
-            playerB: playerB.equals(PublicKey.default) ? playerA : playerB,
-            authorizer: authority.publicKey,
-            authority: authority.publicKey,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([authority]),
-        description
-      );
-    } catch (err) {
-      console.log(`⚠️ Failed to close wager: ${err.message}`);
-    }
-  };
+
+    await executeAndLogTx(
+      program.methods
+        .closeWager()
+        .accounts({
+          wager: wagerPDA,
+          playerA: playerA,
+          playerB: playerB,
+          authorizer: authority.publicKey,
+          authority: authority.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([authority]),
+      description
+    );
+  } catch (err) {
+    console.log(`⚠️ Failed to close wager: ${err.message}`);
+  }
+};
 
   it("Initializes players successfully", async () => {
     console.log("🧪 Testing: Initialize Player A");
