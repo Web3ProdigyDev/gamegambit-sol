@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-declare_id!("6r4TN44wRd6vjmZG5ffTRTo5JKC8Ajhuj95AENTymesq");
+declare_id!("CPS82nShfYFBdJPLs4kLMYEUrTwvxieqSrkw6VYRopzx");
 
 const MAX_LICHESS_GAME_ID_LENGTH: usize = 20;
 
@@ -262,7 +262,7 @@ pub mod gamegambit {
         );
 
         if wager.status == WagerStatus::Retractable {
-            require!(now > wager.retract_deadline, ErrorCode::VoteWindowExpired);
+            require!(now > wager.retract_deadline, ErrorCode::RetractPeriodNotExpired);
             require!(
                 wager.vote_player_a == Some(winner) && wager.vote_player_b == Some(winner),
                 ErrorCode::InvalidVote
@@ -563,8 +563,10 @@ pub enum ErrorCode {
     InvalidStatus,
     #[msg("Unauthorized access")]
     Unauthorized,
-    #[msg("Vote window expired")]
-    VoteWindowExpired,
+    #[msg("Retract period has not expired yet")]
+    RetractPeriodNotExpired,
+    // #[msg("Vote window expired")] // removed to avoid confusion
+    // VoteWindowExpired, // removed to avoid confusion
     #[msg("Retract period expired")]
     RetractExpired,
     #[msg("Invalid amount")]
