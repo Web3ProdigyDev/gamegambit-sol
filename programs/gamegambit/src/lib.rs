@@ -1,9 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-declare_id!("CPS82nShfYFBdJPLs4kLMYEUrTwvxieqSrkw6VYRopzx");
+declare_id!("E2Vd3U91kMrgwp8JCXcLSn7bt3NowDmGwoBYsVRhGfMR");
 
 const MAX_LICHESS_GAME_ID_LENGTH: usize = 20;
+const PLATFORM_FEE_BPS: u64 = 1000; // 10% = 1000 basis points (out of 10000)
 
 #[allow(deprecated)]
 #[program]
@@ -245,6 +246,7 @@ pub mod gamegambit {
     pub fn resolve_wager(ctx: Context<ResolveWager>, winner: Pubkey) -> Result<()> {
         let wager_info = ctx.accounts.wager.to_account_info();
         let winner_info = ctx.accounts.winner.to_account_info();
+        let platform_wallet_info = ctx.accounts.platform_wallet.to_account_info();
         let now = Clock::get()?.unix_timestamp;
 
         let wager = &mut ctx.accounts.wager;
@@ -261,28 +263,36 @@ pub mod gamegambit {
             ErrorCode::InvalidWinner
         );
 
+        // Authorization logic
+        let is_authority = ctx.accounts.authorizer.key() == ctx.accounts.authority.key();
+        let is_player = ctx.accounts.authorizer.key() == wager.player_a 
+                        || ctx.accounts.authorizer.key() == wager.player_b;
+
         if wager.status == WagerStatus::Retractable {
             require!(now > wager.retract_deadline, ErrorCode::RetractPeriodNotExpired);
             require!(
                 wager.vote_player_a == Some(winner) && wager.vote_player_b == Some(winner),
                 ErrorCode::InvalidVote
             );
-            require!(
-                ctx.accounts.authorizer.key() == wager.player_a
-                    || ctx.accounts.authorizer.key() == wager.player_b,
-                ErrorCode::Unauthorized
-            );
+            // Allow authority OR either player to resolve
+            require!(is_authority || is_player, ErrorCode::Unauthorized);
         } else if wager.status == WagerStatus::Disputed {
-            require!(
-                ctx.accounts.authorizer.key() != wager.player_a
-                    && ctx.accounts.authorizer.key() != wager.player_b,
-                ErrorCode::Unauthorized
-            );
+            // Only authority can resolve disputes
+            require!(is_authority, ErrorCode::Unauthorized);
+        } else if wager.status == WagerStatus::Voting {
+            // Only authority can auto-resolve voting state
+            require!(is_authority, ErrorCode::Unauthorized);
         }
 
-        let total_lamports = wager.stake_lamports * 2;
-        **wager_info.try_borrow_mut_lamports()? -= total_lamports;
-        **winner_info.try_borrow_mut_lamports()? += total_lamports;
+        // Calculate platform fee (10%) and winner payout
+        let total_pot = wager.stake_lamports * 2;
+        let platform_fee = (total_pot * PLATFORM_FEE_BPS) / 10000; // 10% fee
+        let winner_payout = total_pot - platform_fee;
+
+        // Transfer funds
+        **wager_info.try_borrow_mut_lamports()? -= total_pot;
+        **winner_info.try_borrow_mut_lamports()? += winner_payout;
+        **platform_wallet_info.try_borrow_mut_lamports()? += platform_fee;
 
         wager.winner = Some(winner);
         wager.status = WagerStatus::Resolved;
@@ -291,7 +301,8 @@ pub mod gamegambit {
         emit!(WagerResolved {
             wager_id: wager.key(),
             winner,
-            total_payout: total_lamports,
+            total_payout: winner_payout,
+            platform_fee,
         });
 
         Ok(())
@@ -453,6 +464,11 @@ pub struct ResolveWager<'info> {
     pub winner: UncheckedAccount<'info>,
     #[account(mut)]
     pub authorizer: Signer<'info>,
+    /// CHECK: Platform fee recipient wallet
+    #[account(mut)]
+    pub platform_wallet: UncheckedAccount<'info>,
+    /// CHECK: Authority pubkey for validation
+    pub authority: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -549,6 +565,7 @@ pub struct WagerResolved {
     pub wager_id: Pubkey,
     pub winner: Pubkey,
     pub total_payout: u64,
+    pub platform_fee: u64,
 }
 
 #[event]
@@ -565,8 +582,6 @@ pub enum ErrorCode {
     Unauthorized,
     #[msg("Retract period has not expired yet")]
     RetractPeriodNotExpired,
-    // #[msg("Vote window expired")] // removed to avoid confusion
-    // VoteWindowExpired, // removed to avoid confusion
     #[msg("Retract period expired")]
     RetractExpired,
     #[msg("Invalid amount")]

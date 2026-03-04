@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-gamegambit = "CPS82nShfYFBdJPLs4kLMYEUrTwvxieqSrkw6VYRopzx"
+gamegambit = "E2Vd3U91kMrgwp8JCXcLSn7bt3NowDmGwoBYsVRhGfMR"
 
 [registry]
 url = "https://api.apr.dev"
