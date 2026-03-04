@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>GameGambit Trophies</title>
+<style>
+body{margin:0;padding:50px;background:linear-gradient(135deg,#1e3c72 0%,#2a5298 100%);font-family:Arial}
+h1{text-align:center;color:white;font-size:3em;margin-bottom:50px}
+.gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:30px;max-width:1400px;margin:0 auto}
+.card{background:white;border-radius:20px;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,0.3);transition:transform 0.3s}
+.card:hover{transform:translateY(-10px)}
+.card-header{height:300px;display:flex;align-items:center;justify-content:center;position:relative}
+.bronze .card-header{background:linear-gradient(135deg,#cd7f32 0%,#8b5a2b 100%)}
+.silver .card-header{background:linear-gradient(135deg,#c0c0c0 0%,#808080 100%)}
+.gold .card-header{background:linear-gradient(135deg,#ffd700 0%,#ffed4e 100%)}
+.diamond .card-header{background:linear-gradient(135deg,#b9f2ff 0%,#667eea 50%,#b9f2ff 100%);background-size:200% 200%;animation:rainbow 5s infinite}
+@keyframes rainbow{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+.trophy-img{max-width:70%;max-height:70%;animation:float 3s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-15px)}}
+.card-body{padding:25px;text-align:center}
+.card-body h3{margin:0 0 10px;font-size:1.8em;color:#333}
+.tier-badge{display:inline-block;padding:8px 20px;border-radius:20px;font-weight:bold;margin:10px 0}
+.bronze .tier-badge{background:#cd7f32;color:white}
+.silver .tier-badge{background:#c0c0c0;color:#333}
+.gold .tier-badge{background:#ffd700;color:#333}
+.diamond .tier-badge{background:linear-gradient(135deg,#b9f2ff 0%,#667eea 100%);color:white}
+.stats{margin:15px 0;color:#666;font-size:0.95em}
+.view-btn{display:inline-block;margin-top:15px;padding:12px 30px;background:#667eea;color:white;text-decoration:none;border-radius:25px}
+</style>
+</head>
+<body>
+<h1>🏆 GameGambit Trophy Collection</h1>
+<div class="gallery">
+<div class="card bronze">
+<div class="card-header">
+<img src="https://gateway.pinata.cloud/ipfs/bafybeicdyog7bjcljl5i5c2bjwnpdzjobfx74igq4d3rr43xtojrblvbcm" alt="Bronze" class="trophy-img">
+</div>
+<div class="card-body">
+<h3>Bronze Champion</h3>
+<span class="tier-badge">COMMON</span>
+<div class="stats"><p>0.01 - 0.1 SOL</p></div>
+<a href="https://gateway.pinata.cloud/ipfs/bafybeicdyog7bjcljl5i5c2bjwnpdzjobfx74igq4d3rr43xtojrblvbcm" target="_blank" class="view-btn">View</a>
+</div>
+</div>
+<div class="card silver">
+<div class="card-header">
+<img src="https://gateway.pinata.cloud/ipfs/bafybeifzryhfb6uetnd4vixcvcso6woyv6mfsr6f2473zdxs6wwyxdetam" alt="Silver" class="trophy-img">
+</div>
+<div class="card-body">
+<h3>Silver Victor</h3>
+<span class="tier-badge">UNCOMMON</span>
+<div class="stats"><p>0.1 - 1 SOL</p></div>
+<a href="https://gateway.pinata.cloud/ipfs/bafybeifzryhfb6uetnd4vixcvcso6woyv6mfsr6f2473zdxs6wwyxdetam" target="_blank" class="view-btn">View</a>
+</div>
+</div>
+<div class="card gold">
+<div class="card-header">
+<img src="https://gateway.pinata.cloud/ipfs/bafybeiah2dcbyq6yqluqkc46n7vg3vslgb356en6y6xtcuknl3xiedwu7m" alt="Gold" class="trophy-img">
+</div>
+<div class="card-body">
+<h3>Gold Master</h3>
+<span class="tier-badge">RARE</span>
+<div class="stats"><p>1 - 10 SOL</p></div>
+<a href="https://gateway.pinata.cloud/ipfs/bafybeiah2dcbyq6yqluqkc46n7vg3vslgb356en6y6xtcuknl3xiedwu7m" target="_blank" class="view-btn">View</a>
+</div>
+</div>
+<div class="card diamond">
+<div class="card-header">
+<img src="https://gateway.pinata.cloud/ipfs/bafybeicaizle7bjcw5wrt2lrecgnyz5vbavu4olkbl6ifjehjnv42wwzda" alt="Diamond" class="trophy-img">
+</div>
+<div class="card-body">
+<h3>Diamond Legend</h3>
+<span class="tier-badge">LEGENDARY</span>
+<div class="stats"><p>10+ SOL</p></div>
+<a href="https://gateway.pinata.cloud/ipfs/bafybeicaizle7bjcw5wrt2lrecgnyz5vbavu4olkbl6ifjehjnv42wwzda" target="_blank" class="view-btn">View</a>
+</div>
+</div>
+</div>
+</body>
+</html>

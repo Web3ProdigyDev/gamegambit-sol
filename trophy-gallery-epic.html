@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>GameGambit - Epic Trophies</title>
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #0a0a0a;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  overflow-x: hidden;
+  min-height: 100vh;
+  position: relative;
+}
+
+/* Animated background particles */
+.bg-particles {
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  background: 
+    radial-gradient(circle at 20% 50%, rgba(102, 126, 234, 0.1) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(118, 75, 162, 0.1) 0%, transparent 50%),
+    radial-gradient(circle at 40% 20%, rgba(255, 215, 0, 0.05) 0%, transparent 50%);
+  animation: bgShift 20s ease infinite;
+}
+
+@keyframes bgShift {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.1) rotate(5deg); }
+}
+
+.floating-particles {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.particle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  animation: float-up 10s linear infinite;
+}
+
+@keyframes float-up {
+  0% {
+    transform: translateY(100vh) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-100px) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+.container {
+  position: relative;
+  z-index: 1;
+  padding: 80px 20px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+h1 {
+  text-align: center;
+  font-size: 4em;
+  background: linear-gradient(135deg, #ffd700, #ffed4e, #ffd700);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 20px;
+  animation: shimmerText 3s ease infinite;
+  text-shadow: 0 0 80px rgba(255, 215, 0, 0.5);
+  filter: drop-shadow(0 0 20px rgba(255, 215, 0, 0.3));
+}
+
+@keyframes shimmerText {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+.subtitle {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 1.3em;
+  margin-bottom: 60px;
+  letter-spacing: 3px;
+}
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  gap: 50px;
+  perspective: 1000px;
+}
+
+.card {
+  position: relative;
+  background: rgba(20, 20, 30, 0.8);
+  border-radius: 25px;
+  overflow: visible;
+  transform-style: preserve-3d;
+  transition: transform 0.5s ease;
+  cursor: pointer;
+}
+
+.card::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 25px;
+  padding: 2px;
+  background: linear-gradient(45deg, transparent, transparent);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  z-index: -1;
+  animation: borderRotate 4s linear infinite;
+}
+
+.bronze::before {
+  background: linear-gradient(45deg, #cd7f32, #ff9f50, #cd7f32, #ff9f50);
+  background-size: 400% 400%;
+}
+
+.silver::before {
+  background: linear-gradient(45deg, #c0c0c0, #e8e8e8, #c0c0c0, #e8e8e8);
+  background-size: 400% 400%;
+}
+
+.gold::before {
+  background: linear-gradient(45deg, #ffd700, #ffed4e, #ffd700, #ffed4e);
+  background-size: 400% 400%;
+}
+
+.diamond::before {
+  background: linear-gradient(45deg, #b9f2ff, #667eea, #764ba2, #b9f2ff);
+  background-size: 400% 400%;
+}
+
+@keyframes borderRotate {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 400% 50%; }
+}
+
+.card:hover {
+  transform: translateY(-20px) rotateX(5deg);
+}
+
+.card-glow {
+  position: absolute;
+  inset: -40px;
+  border-radius: 50%;
+  filter: blur(40px);
+  opacity: 0;
+  transition: opacity 0.5s;
+  z-index: -2;
+  pointer-events: none;
+}
+
+.card:hover .card-glow {
+  opacity: 0.6;
+}
+
+.bronze .card-glow {
+  background: radial-gradient(circle, #cd7f32, transparent);
+}
+
+.silver .card-glow {
+  background: radial-gradient(circle, #c0c0c0, transparent);
+}
+
+.gold .card-glow {
+  background: radial-gradient(circle, #ffd700, transparent);
+}
+
+.diamond .card-glow {
+  background: radial-gradient(circle, #667eea, transparent);
+}
+
+.card-header {
+  position: relative;
+  height: 400px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 25px 25px 0 0;
+}
+
+.bg-gradient {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.bronze .bg-gradient {
+  background: radial-gradient(circle at 30% 30%, #ff9f50, #cd7f32, #8b5a2b);
+  animation: pulseGlow 4s ease infinite;
+}
+
+.silver .bg-gradient {
+  background: radial-gradient(circle at 30% 30%, #e8e8e8, #c0c0c0, #808080);
+  animation: pulseGlow 4s ease infinite;
+}
+
+.gold .bg-gradient {
+  background: radial-gradient(circle at 30% 30%, #ffed4e, #ffd700, #daa520);
+  animation: pulseGlow 4s ease infinite;
+}
+
+.diamond .bg-gradient {
+  background: linear-gradient(135deg, #b9f2ff, #667eea, #764ba2, #b9f2ff);
+  background-size: 300% 300%;
+  animation: rainbowShift 6s ease infinite;
+}
+
+@keyframes pulseGlow {
+  0%, 100% { transform: scale(1); filter: brightness(1); }
+  50% { transform: scale(1.05); filter: brightness(1.2); }
+}
+
+@keyframes rainbowShift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Light rays effect */
+.light-rays {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ray {
+  position: absolute;
+  width: 2px;
+  height: 100%;
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.4), transparent);
+  animation: moveRay 3s linear infinite;
+}
+
+.ray:nth-child(1) { left: 20%; animation-delay: 0s; }
+.ray:nth-child(2) { left: 50%; animation-delay: 1s; }
+.ray:nth-child(3) { left: 80%; animation-delay: 2s; }
+
+@keyframes moveRay {
+  0% { transform: translateY(-100%) rotate(10deg); opacity: 0; }
+  50% { opacity: 1; }
+  100% { transform: translateY(100%) rotate(10deg); opacity: 0; }
+}
+
+/* Sparkles */
+.sparkles {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.sparkle {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 0 10px 2px currentColor;
+  animation: sparkleAnim 2s ease-in-out infinite;
+}
+
+.sparkle:nth-child(1) { top: 15%; left: 15%; animation-delay: 0s; color: #ffd700; }
+.sparkle:nth-child(2) { top: 25%; right: 20%; animation-delay: 0.5s; color: #fff; }
+.sparkle:nth-child(3) { bottom: 30%; left: 25%; animation-delay: 1s; color: #ffd700; }
+.sparkle:nth-child(4) { bottom: 20%; right: 15%; animation-delay: 1.5s; color: #fff; }
+.sparkle:nth-child(5) { top: 40%; left: 50%; animation-delay: 0.8s; color: #ffd700; }
+
+@keyframes sparkleAnim {
+  0%, 100% {
+    transform: scale(0) rotate(0deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.5) rotate(180deg);
+    opacity: 1;
+  }
+}
+
+.trophy-img {
+  position: relative;
+  max-width: 65%;
+  max-height: 65%;
+  z-index: 3;
+  filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.7));
+  animation: floatTrophy 4s ease-in-out infinite;
+  transition: transform 0.5s;
+}
+
+.card:hover .trophy-img {
+  transform: scale(1.1) rotateY(10deg);
+}
+
+@keyframes floatTrophy {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-25px) rotate(5deg);
+  }
+}
+
+/* Holographic shine effect */
+.holo-shine {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  background: linear-gradient(
+    135deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.1) 45%,
+    rgba(255, 255, 255, 0.3) 50%,
+    rgba(255, 255, 255, 0.1) 55%,
+    transparent 100%
+  );
+  transform: translateX(-100%) rotate(45deg);
+  pointer-events: none;
+}
+
+.card:hover .holo-shine {
+  animation: holoSlide 1.5s ease;
+}
+
+@keyframes holoSlide {
+  0% { transform: translateX(-100%) rotate(45deg); }
+  100% { transform: translateX(200%) rotate(45deg); }
+}
+
+.card-body {
+  padding: 30px;
+  text-align: center;
+  position: relative;
+  background: rgba(15, 15, 25, 0.9);
+  border-radius: 0 0 25px 25px;
+}
+
+.card-body h3 {
+  font-size: 2em;
+  margin-bottom: 15px;
+  background: linear-gradient(135deg, #fff, #ccc);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+}
+
+.tier-badge {
+  display: inline-block;
+  padding: 10px 25px;
+  border-radius: 25px;
+  font-weight: bold;
+  font-size: 0.9em;
+  margin: 15px 0;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+  animation: badgePulse 2s ease infinite;
+}
+
+@keyframes badgePulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+.bronze .tier-badge {
+  background: linear-gradient(135deg, #cd7f32, #ff9f50);
+  color: white;
+  box-shadow: 0 4px 15px rgba(205, 127, 50, 0.5);
+}
+
+.silver .tier-badge {
+  background: linear-gradient(135deg, #c0c0c0, #e8e8e8);
+  color: #333;
+  box-shadow: 0 4px 15px rgba(192, 192, 192, 0.5);
+}
+
+.gold .tier-badge {
+  background: linear-gradient(135deg, #ffd700, #ffed4e);
+  color: #333;
+  box-shadow: 0 4px 15px rgba(255, 215, 0, 0.5);
+}
+
+.diamond .tier-badge {
+  background: linear-gradient(135deg, #b9f2ff, #667eea);
+  color: white;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.5);
+  animation: rainbowBadge 3s ease infinite;
+}
+
+@keyframes rainbowBadge {
+  0%, 100% { filter: hue-rotate(0deg); }
+  50% { filter: hue-rotate(20deg); }
+}
+
+.stats {
+  margin: 20px 0;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 1.1em;
+}
+
+.stats p {
+  margin: 8px 0;
+}
+
+.view-btn {
+  display: inline-block;
+  margin-top: 20px;
+  padding: 15px 40px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  text-decoration: none;
+  border-radius: 30px;
+  font-weight: bold;
+  font-size: 1em;
+  transition: all 0.3s;
+  box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+  position: relative;
+  overflow: hidden;
+}
+
+.view-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, #764ba2, #667eea);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.view-btn:hover::before {
+  opacity: 1;
+}
+
+.view-btn span {
+  position: relative;
+  z-index: 1;
+}
+
+.view-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 15px 40px rgba(102, 126, 234, 0.6);
+}
+
+/* Rarity indicator */
+.rarity-stars {
+  margin: 10px 0;
+  font-size: 1.2em;
+}
+
+.bronze .rarity-stars { color: #cd7f32; }
+.silver .rarity-stars { color: #c0c0c0; }
+.gold .rarity-stars { color: #ffd700; }
+.diamond .rarity-stars { 
+  background: linear-gradient(135deg, #b9f2ff, #667eea);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+</style>
+</head>
+<body>
+
+<div class="bg-particles"></div>
+<div class="floating-particles">
+  <div class="particle" style="left: 10%; animation-delay: 0s;"></div>
+  <div class="particle" style="left: 20%; animation-delay: 2s;"></div>
+  <div class="particle" style="left: 30%; animation-delay: 4s;"></div>
+  <div class="particle" style="left: 40%; animation-delay: 1s;"></div>
+  <div class="particle" style="left: 50%; animation-delay: 3s;"></div>
+  <div class="particle" style="left: 60%; animation-delay: 5s;"></div>
+  <div class="particle" style="left: 70%; animation-delay: 2.5s;"></div>
+  <div class="particle" style="left: 80%; animation-delay: 4.5s;"></div>
+  <div class="particle" style="left: 90%; animation-delay: 1.5s;"></div>
+</div>
+
+<div class="container">
+  <h1>🏆 GAMEGAMBIT TROPHY VAULT</h1>
+  <p class="subtitle">LEGENDARY COLLECTION</p>
+  
+  <div class="gallery">
+    
+    <div class="card bronze">
+      <div class="card-glow"></div>
+      <div class="card-header">
+        <div class="bg-gradient"></div>
+        <div class="light-rays">
+          <div class="ray"></div>
+          <div class="ray"></div>
+          <div class="ray"></div>
+        </div>
+        <div class="sparkles">
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+        </div>
+        <img src="https://gateway.pinata.cloud/ipfs/bafybeicdyog7bjcljl5i5c2bjwnpdzjobfx74igq4d3rr43xtojrblvbcm" alt="Bronze Trophy" class="trophy-img">
+        <div class="holo-shine"></div>
+      </div>
+      <div class="card-body">
+        <h3>BRONZE CHAMPION</h3>
+        <div class="rarity-stars">★</div>
+        <span class="tier-badge">Common</span>
+        <div class="stats">
+          <p><strong>0.01 - 0.1 SOL</strong></p>
+          <p>🎮 Entry Level Victory</p>
+        </div>
+        <a href="https://gateway.pinata.cloud/ipfs/bafybeicdyog7bjcljl5i5c2bjwnpdzjobfx74igq4d3rr43xtojrblvbcm" target="_blank" class="view-btn"><span>VIEW TROPHY</span></a>
+      </div>
+    </div>
+    
+    <div class="card silver">
+      <div class="card-glow"></div>
+      <div class="card-header">
+        <div class="bg-gradient"></div>
+        <div class="light-rays">
+          <div class="ray"></div>
+          <div class="ray"></div>
+          <div class="ray"></div>
+        </div>
+        <div class="sparkles">
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+        </div>
+        <img src="https://gateway.pinata.cloud/ipfs/bafybeifzryhfb6uetnd4vixcvcso6woyv6mfsr6f2473zdxs6wwyxdetam" alt="Silver Trophy" class="trophy-img">
+        <div class="holo-shine"></div>
+      </div>
+      <div class="card-body">
+        <h3>SILVER VICTOR</h3>
+        <div class="rarity-stars">★★</div>
+        <span class="tier-badge">Uncommon</span>
+        <div class="stats">
+          <p><strong>0.1 - 1 SOL</strong></p>
+          <p>⚔️ Rising Star</p>
+        </div>
+        <a href="https://gateway.pinata.cloud/ipfs/bafybeifzryhfb6uetnd4vixcvcso6woyv6mfsr6f2473zdxs6wwyxdetam" target="_blank" class="view-btn"><span>VIEW TROPHY</span></a>
+      </div>
+    </div>
+    
+    <div class="card gold">
+      <div class="card-glow"></div>
+      <div class="card-header">
+        <div class="bg-gradient"></div>
+        <div class="light-rays">
+          <div class="ray"></div>
+          <div class="ray"></div>
+          <div class="ray"></div>
+        </div>
+        <div class="sparkles">
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+        </div>
+        <img src="https://gateway.pinata.cloud/ipfs/bafybeiah2dcbyq6yqluqkc46n7vg3vslgb356en6y6xtcuknl3xiedwu7m" alt="Gold Trophy" class="trophy-img">
+        <div class="holo-shine"></div>
+      </div>
+      <div class="card-body">
+        <h3>GOLD MASTER</h3>
+        <div class="rarity-stars">★★★</div>
+        <span class="tier-badge">Rare</span>
+        <div class="stats">
+          <p><strong>1 - 10 SOL</strong></p>
+          <p>👑 Elite Champion</p>
+        </div>
+        <a href="https://gateway.pinata.cloud/ipfs/bafybeiah2dcbyq6yqluqkc46n7vg3vslgb356en6y6xtcuknl3xiedwu7m" target="_blank" class="view-btn"><span>VIEW TROPHY</span></a>
+      </div>
+    </div>
+    
+    <div class="card diamond">
+      <div class="card-glow"></div>
+      <div class="card-header">
+        <div class="bg-gradient"></div>
+        <div class="light-rays">
+          <div class="ray"></div>
+          <div class="ray"></div>
+          <div class="ray"></div>
+        </div>
+        <div class="sparkles">
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+          <div class="sparkle"></div>
+        </div>
+        <img src="https://gateway.pinata.cloud/ipfs/bafybeicaizle7bjcw5wrt2lrecgnyz5vbavu4olkbl6ifjehjnv42wwzda" alt="Diamond Trophy" class="trophy-img">
+        <div class="holo-shine"></div>
+      </div>
+      <div class="card-body">
+        <h3>DIAMOND LEGEND</h3>
+        <div class="rarity-stars">★★★★★</div>
+        <span class="tier-badge">Legendary</span>
+        <div class="stats">
+          <p><strong>10+ SOL</strong></p>
+          <p>⚡ Godlike Status</p>
+        </div>
+        <a href="https://gateway.pinata.cloud/ipfs/bafybeicaizle7bjcw5wrt2lrecgnyz5vbavu4olkbl6ifjehjnv42wwzda" target="_blank" class="view-btn"><span>VIEW TROPHY</span></a>
+      </div>
+    </div>
+    
+  </div>
+</div>
+
+</body>
+</html>
