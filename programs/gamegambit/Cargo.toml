@@ -1,7 +1,7 @@
 [package]
 name = "gamegambit"
 version = "0.1.0"
-description = "Game Gambit Smart Contract"
+description = "Game Gambit — on-chain chess wager program"
 edition = "2021"
 
 [lib]
@@ -14,10 +14,8 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
-anchor-debug = []
+idl-build = ["anchor-lang/idl-build"]
+anchor-debug = ["anchor-lang/anchor-debug"]
 
 [dependencies]
-anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
-anchor-spl = { version = "0.31.1", features = ["token", "metadata"] }
-mpl-token-metadata = { version = "5.1.0", features = ["serde"] }
+anchor-lang = { version = "=0.31.1", features = ["init-if-needed"] }

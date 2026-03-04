@@ -3,10 +3,28 @@ use anchor_lang::system_program;
 
 declare_id!("E2Vd3U91kMrgwp8JCXcLSn7bt3NowDmGwoBYsVRhGfMR");
 
-const MAX_LICHESS_GAME_ID_LENGTH: usize = 20;
-const PLATFORM_FEE_BPS: u64 = 1000; // 10% = 1000 basis points (out of 10000)
+// ── Constants ────────────────────────────────────────────────────────────────
 
-#[allow(deprecated)]
+const MAX_LICHESS_GAME_ID_LENGTH: usize = 20;
+const PLATFORM_FEE_BPS: u64 = 1000; // 10% = 1000 bps out of 10_000
+
+const AUTHORITY_PUBKEY: Pubkey = pubkey!("Ec7XfHbeDw1YmHzcGo3WrK73QnqQ3GL9VBczYGPCQJha");
+const PLATFORM_WALLET_PUBKEY: Pubkey = pubkey!("3hwPwugeuZ33HWJ3SoJkDN2JT3Be9fH62r19ezFiCgYY");
+
+const RETRACT_WINDOW_SECONDS: i64 = 48 * 60 * 60;
+const WAGER_JOIN_EXPIRY_SECONDS: i64 = 7 * 24 * 60 * 60;
+
+// ── Account space ────────────────────────────────────────────────────────────
+
+// PlayerProfile: 8 (disc) + 32 + 1 + 8 + 8 + 1 = 58 bytes used; 128 allocated.
+const PLAYER_PROFILE_SPACE: usize = 128;
+
+// WagerAccount: 8 (disc) + 1 + 32 + 32 + 8 + 8 + 24 + 1 + 1 + 33 + 33 + 33
+//               + 8 + 8 + 8 + 8 + 8 = 215 bytes used; 320 allocated.
+const WAGER_ACCOUNT_SPACE: usize = 320;
+
+// ── Program ──────────────────────────────────────────────────────────────────
+
 #[program]
 pub mod gamegambit {
     use super::*;
@@ -24,16 +42,14 @@ pub mod gamegambit {
     }
 
     pub fn ban_player(ctx: Context<BanPlayer>, ban_duration: i64) -> Result<()> {
-        let player_profile = &mut ctx.accounts.player_profile;
-        let now = Clock::get()?.unix_timestamp;
-
-        // Only authority can ban players
         require!(
-            ctx.accounts.authorizer.key() == ctx.accounts.authority.key(),
+            ctx.accounts.authorizer.key() == AUTHORITY_PUBKEY,
             ErrorCode::Unauthorized
         );
 
-        // Set ban status and expiration
+        let player_profile = &mut ctx.accounts.player_profile;
+        let now = Clock::get()?.unix_timestamp;
+
         if ban_duration == 0 {
             player_profile.is_banned = false;
             player_profile.ban_expires_at = 0;
@@ -44,6 +60,7 @@ pub mod gamegambit {
 
         emit!(PlayerBanned {
             player: player_profile.player,
+            is_banned: player_profile.is_banned,
             ban_expires_at: player_profile.ban_expires_at,
         });
 
@@ -66,11 +83,7 @@ pub mod gamegambit {
         );
 
         let now = Clock::get()?.unix_timestamp;
-        require!(
-            !ctx.accounts.player_a_profile.is_banned
-                || ctx.accounts.player_a_profile.ban_expires_at <= now,
-            ErrorCode::PlayerBanned
-        );
+        require_not_banned(&ctx.accounts.player_a_profile, now)?;
 
         let wager_key = ctx.accounts.wager.key();
         let player_a_key = ctx.accounts.player_a.key();
@@ -101,6 +114,7 @@ pub mod gamegambit {
         wager.vote_timestamp = 0;
         wager.retract_deadline = 0;
         wager.created_at = now;
+        wager.expires_at = now + WAGER_JOIN_EXPIRY_SECONDS;
         wager.resolved_at = 0;
 
         emit!(WagerCreated {
@@ -126,15 +140,12 @@ pub mod gamegambit {
             wager.status == WagerStatus::Created,
             ErrorCode::InvalidStatus
         );
+        require!(now <= wager.expires_at, ErrorCode::WagerExpired);
         require!(
             stake_lamports == wager.stake_lamports,
             ErrorCode::InvalidAmount
         );
-        require!(
-            !ctx.accounts.player_b_profile.is_banned
-                || ctx.accounts.player_b_profile.ban_expires_at <= now,
-            ErrorCode::PlayerBanned
-        );
+        require_not_banned(&ctx.accounts.player_b_profile, now)?;
         require!(player_b_key != wager.player_a, ErrorCode::InvalidPlayer);
 
         system_program::transfer(
@@ -196,7 +207,7 @@ pub mod gamegambit {
         if let (Some(vote_a), Some(vote_b)) = (wager.vote_player_a, wager.vote_player_b) {
             if vote_a == vote_b {
                 wager.status = WagerStatus::Retractable;
-                wager.retract_deadline = now + 10; // 10 seconds for testing
+                wager.retract_deadline = now + RETRACT_WINDOW_SECONDS;
             } else {
                 wager.status = WagerStatus::Disputed;
             }
@@ -245,9 +256,11 @@ pub mod gamegambit {
 
     pub fn resolve_wager(ctx: Context<ResolveWager>, winner: Pubkey) -> Result<()> {
         let wager_info = ctx.accounts.wager.to_account_info();
-        let winner_info = ctx.accounts.winner.to_account_info();
-        let platform_wallet_info = ctx.accounts.platform_wallet.to_account_info();
         let now = Clock::get()?.unix_timestamp;
+
+        let is_authority = ctx.accounts.authorizer.key() == AUTHORITY_PUBKEY;
+        let is_player = ctx.accounts.authorizer.key() == ctx.accounts.wager.player_a
+            || ctx.accounts.authorizer.key() == ctx.accounts.wager.player_b;
 
         let wager = &mut ctx.accounts.wager;
         msg!("Resolving wager, current status: {:?}", wager.status);
@@ -262,34 +275,55 @@ pub mod gamegambit {
             winner == wager.player_a || winner == wager.player_b,
             ErrorCode::InvalidWinner
         );
+        require!(
+            ctx.accounts.winner.key() == winner,
+            ErrorCode::InvalidWinner
+        );
+        require!(
+            ctx.accounts.platform_wallet.key() == PLATFORM_WALLET_PUBKEY,
+            ErrorCode::InvalidPlatformWallet
+        );
 
-        // Authorization logic
-        let is_authority = ctx.accounts.authorizer.key() == ctx.accounts.authority.key();
-        let is_player = ctx.accounts.authorizer.key() == wager.player_a 
-                        || ctx.accounts.authorizer.key() == wager.player_b;
+        if wager.requires_moderator {
+            require!(is_authority, ErrorCode::Unauthorized);
+        }
 
         if wager.status == WagerStatus::Retractable {
-            require!(now > wager.retract_deadline, ErrorCode::RetractPeriodNotExpired);
+            require!(
+                now > wager.retract_deadline,
+                ErrorCode::RetractPeriodNotExpired
+            );
             require!(
                 wager.vote_player_a == Some(winner) && wager.vote_player_b == Some(winner),
                 ErrorCode::InvalidVote
             );
-            // Allow authority OR either player to resolve
             require!(is_authority || is_player, ErrorCode::Unauthorized);
         } else if wager.status == WagerStatus::Disputed {
-            // Only authority can resolve disputes
             require!(is_authority, ErrorCode::Unauthorized);
         } else if wager.status == WagerStatus::Voting {
-            // Only authority can auto-resolve voting state
             require!(is_authority, ErrorCode::Unauthorized);
         }
 
-        // Calculate platform fee (10%) and winner payout
-        let total_pot = wager.stake_lamports * 2;
-        let platform_fee = (total_pot * PLATFORM_FEE_BPS) / 10000; // 10% fee
-        let winner_payout = total_pot - platform_fee;
+        let total_pot = wager.stake_lamports
+            .checked_mul(2)
+            .ok_or(ErrorCode::ArithmeticOverflow)?;
+        let platform_fee = total_pot
+            .checked_mul(PLATFORM_FEE_BPS)
+            .ok_or(ErrorCode::ArithmeticOverflow)?
+            .checked_div(10_000)
+            .ok_or(ErrorCode::ArithmeticOverflow)?;
+        let winner_payout = total_pot
+            .checked_sub(platform_fee)
+            .ok_or(ErrorCode::ArithmeticOverflow)?;
 
-        // Transfer funds
+        require!(
+            wager_info.lamports() >= total_pot,
+            ErrorCode::InsufficientFunds
+        );
+
+        let winner_info = ctx.accounts.winner.to_account_info();
+        let platform_wallet_info = ctx.accounts.platform_wallet.to_account_info();
+
         **wager_info.try_borrow_mut_lamports()? -= total_pot;
         **winner_info.try_borrow_mut_lamports()? += winner_payout;
         **platform_wallet_info.try_borrow_mut_lamports()? += platform_fee;
@@ -301,6 +335,8 @@ pub mod gamegambit {
         emit!(WagerResolved {
             wager_id: wager.key(),
             winner,
+            player_a: wager.player_a,
+            player_b: wager.player_b,
             total_payout: winner_payout,
             platform_fee,
         });
@@ -309,61 +345,82 @@ pub mod gamegambit {
     }
 
     pub fn close_wager(ctx: Context<CloseWager>) -> Result<()> {
-        let wager_info = ctx.accounts.wager.to_account_info();
-        let authorizer_info = ctx.accounts.authorizer.to_account_info();
-        let wager = &mut ctx.accounts.wager;
-        msg!("Closing wager, current status: {:?}", wager.status);
+        require!(
+            ctx.accounts.player_a.key() == ctx.accounts.wager.player_a,
+            ErrorCode::InvalidPlayer
+        );
+        require!(
+            ctx.accounts.wager.player_b == Pubkey::default()
+                || ctx.accounts.player_b.key() == ctx.accounts.wager.player_b,
+            ErrorCode::InvalidPlayer
+        );
+
+        let is_authority = ctx.accounts.authorizer.key() == AUTHORITY_PUBKEY;
+        let is_player_a = ctx.accounts.authorizer.key() == ctx.accounts.wager.player_a;
+        let is_player_b = ctx.accounts.authorizer.key() == ctx.accounts.wager.player_b;
 
         require!(
-            ctx.accounts.authorizer.key() == wager.player_a
-                || ctx.accounts.authorizer.key() == wager.player_b
-                || ctx.accounts.authorizer.key() == ctx.accounts.authority.key(),
+            is_authority || is_player_a || is_player_b,
             ErrorCode::Unauthorized
         );
 
-        if wager.status != WagerStatus::Resolved {
-            let mut total_lamports = 0;
-            if wager.player_a != Pubkey::default() {
-                total_lamports += wager.stake_lamports;
+        let wager_info = ctx.accounts.wager.to_account_info();
+
+        if ctx.accounts.wager.status != WagerStatus::Resolved {
+            let stake = ctx.accounts.wager.stake_lamports;
+
+            if ctx.accounts.wager.player_a != Pubkey::default() {
+                require!(
+                    wager_info.lamports() >= stake,
+                    ErrorCode::InsufficientFunds
+                );
+                **wager_info.try_borrow_mut_lamports()? -= stake;
+                **ctx
+                    .accounts
+                    .player_a
+                    .to_account_info()
+                    .try_borrow_mut_lamports()? += stake;
             }
-            if wager.player_b != Pubkey::default() {
-                total_lamports += wager.stake_lamports;
-            }
-            if total_lamports > 0 {
-                **wager_info.try_borrow_mut_lamports()? -= total_lamports;
-                if wager.player_a != Pubkey::default() {
-                    **ctx
-                        .accounts
-                        .player_a
-                        .to_account_info()
-                        .try_borrow_mut_lamports()? += wager.stake_lamports;
-                }
-                if wager.player_b != Pubkey::default() {
-                    **ctx
-                        .accounts
-                        .player_b
-                        .to_account_info()
-                        .try_borrow_mut_lamports()? += wager.stake_lamports;
-                }
+
+            if ctx.accounts.wager.player_b != Pubkey::default() {
+                require!(
+                    wager_info.lamports() >= stake,
+                    ErrorCode::InsufficientFunds
+                );
+                **wager_info.try_borrow_mut_lamports()? -= stake;
+                **ctx
+                    .accounts
+                    .player_b
+                    .to_account_info()
+                    .try_borrow_mut_lamports()? += stake;
             }
         }
 
-        let remaining = wager_info.lamports();
-        if remaining > 0 {
-            **wager_info.try_borrow_mut_lamports()? -= remaining;
-            **authorizer_info.try_borrow_mut_lamports()? += remaining;
-        }
+        emit!(WagerClosed {
+            wager_id: wager_info.key(),
+            closed_by: ctx.accounts.authorizer.key(),
+        });
 
         Ok(())
     }
 }
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn require_not_banned(profile: &PlayerProfile, now: i64) -> Result<()> {
+    let still_banned = profile.is_banned && profile.ban_expires_at > now;
+    require!(!still_banned, ErrorCode::PlayerBanned);
+    Ok(())
+}
+
+// ── Account contexts ─────────────────────────────────────────────────────────
 
 #[derive(Accounts)]
 pub struct InitializePlayer<'info> {
     #[account(
         init_if_needed,
         payer = player,
-        space = 64,
+        space = PLAYER_PROFILE_SPACE,
         seeds = [b"player", player.key().as_ref()],
         bump
     )]
@@ -383,8 +440,6 @@ pub struct BanPlayer<'info> {
     pub player_profile: Account<'info, PlayerProfile>,
     #[account(mut)]
     pub authorizer: Signer<'info>,
-    /// CHECK: Authority pubkey is validated in instruction logic to match authorizer
-    pub authority: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -394,7 +449,7 @@ pub struct CreateWager<'info> {
     #[account(
         init,
         payer = player_a,
-        space = 300,
+        space = WAGER_ACCOUNT_SPACE,
         seeds = [b"wager", player_a.key().as_ref(), match_id.to_le_bytes().as_ref()],
         bump
     )]
@@ -419,7 +474,7 @@ pub struct JoinWager<'info> {
     pub wager: Account<'info, WagerAccount>,
     #[account(
         seeds = [b"player", player_b.key().as_ref()],
-        bump
+        bump = player_b_profile.bump
     )]
     pub player_b_profile: Account<'info, PlayerProfile>,
     #[account(mut)]
@@ -459,16 +514,17 @@ pub struct ResolveWager<'info> {
         bump = wager.bump
     )]
     pub wager: Account<'info, WagerAccount>,
-    /// CHECK: Winner is validated to be either wager.player_a or wager.player_b in instruction logic
+    /// CHECK: Validated against wager.player_a / wager.player_b and the winner argument.
     #[account(mut)]
     pub winner: UncheckedAccount<'info>,
     #[account(mut)]
     pub authorizer: Signer<'info>,
-    /// CHECK: Platform fee recipient wallet
-    #[account(mut)]
+    /// CHECK: Validated against PLATFORM_WALLET_PUBKEY constant.
+    #[account(
+        mut,
+        constraint = platform_wallet.key() == PLATFORM_WALLET_PUBKEY @ ErrorCode::InvalidPlatformWallet
+    )]
     pub platform_wallet: UncheckedAccount<'info>,
-    /// CHECK: Authority pubkey for validation
-    pub authority: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -481,18 +537,18 @@ pub struct CloseWager<'info> {
         close = authorizer
     )]
     pub wager: Account<'info, WagerAccount>,
-    /// CHECK: Validated to be wager.player_a in instruction logic
+    /// CHECK: Validated in instruction to equal wager.player_a.
     #[account(mut)]
     pub player_a: UncheckedAccount<'info>,
-    /// CHECK: Validated to be wager.player_b or default in instruction logic
+    /// CHECK: Validated in instruction to equal wager.player_b (or default).
     #[account(mut)]
     pub player_b: UncheckedAccount<'info>,
     #[account(mut)]
     pub authorizer: Signer<'info>,
-    /// CHECK: Authority pubkey is validated in instruction logic to match authorizer
-    pub authority: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
+
+// ── Account structs ──────────────────────────────────────────────────────────
 
 #[account]
 pub struct PlayerProfile {
@@ -519,6 +575,7 @@ pub struct WagerAccount {
     pub vote_timestamp: i64,
     pub retract_deadline: i64,
     pub created_at: i64,
+    pub expires_at: i64,
     pub resolved_at: i64,
 }
 
@@ -529,8 +586,11 @@ pub enum WagerStatus {
     Voting,
     Retractable,
     Disputed,
+    Closed,
     Resolved,
 }
+
+// ── Events ───────────────────────────────────────────────────────────────────
 
 #[event]
 pub struct WagerCreated {
@@ -564,15 +624,26 @@ pub struct VoteRetracted {
 pub struct WagerResolved {
     pub wager_id: Pubkey,
     pub winner: Pubkey,
+    pub player_a: Pubkey,
+    pub player_b: Pubkey,
     pub total_payout: u64,
     pub platform_fee: u64,
 }
 
 #[event]
+pub struct WagerClosed {
+    pub wager_id: Pubkey,
+    pub closed_by: Pubkey,
+}
+
+#[event]
 pub struct PlayerBanned {
     pub player: Pubkey,
+    pub is_banned: bool,
     pub ban_expires_at: i64,
 }
+
+// ── Errors ───────────────────────────────────────────────────────────────────
 
 #[error_code]
 pub enum ErrorCode {
@@ -600,4 +671,12 @@ pub enum ErrorCode {
     InvalidPlayer,
     #[msg("Player is banned")]
     PlayerBanned,
+    #[msg("Wager has expired")]
+    WagerExpired,
+    #[msg("Invalid platform wallet")]
+    InvalidPlatformWallet,
+    #[msg("Arithmetic overflow")]
+    ArithmeticOverflow,
+    #[msg("Insufficient funds in wager account")]
+    InsufficientFunds,
 }
