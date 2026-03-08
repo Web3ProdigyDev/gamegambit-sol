@@ -11,7 +11,7 @@ const PLATFORM_FEE_BPS: u64 = 1000; // 10% = 1000 bps out of 10_000
 const AUTHORITY_PUBKEY: Pubkey = pubkey!("Ec7XfHbeDw1YmHzcGo3WrK73QnqQ3GL9VBczYGPCQJha");
 const PLATFORM_WALLET_PUBKEY: Pubkey = pubkey!("3hwPwugeuZ33HWJ3SoJkDN2JT3Be9fH62r19ezFiCgYY");
 
-const RETRACT_WINDOW_SECONDS: i64 = 48 * 60 * 60;
+const RETRACT_WINDOW_SECONDS: i64 = 15; // Testing only
 const WAGER_JOIN_EXPIRY_SECONDS: i64 = 7 * 24 * 60 * 60;
 
 // ── Account space ────────────────────────────────────────────────────────────
@@ -268,7 +268,8 @@ pub mod gamegambit {
         require!(
             wager.status == WagerStatus::Retractable
                 || wager.status == WagerStatus::Disputed
-                || wager.status == WagerStatus::Voting,
+                || wager.status == WagerStatus::Voting
+                || wager.status == WagerStatus::Joined,
             ErrorCode::InvalidStatus
         );
         require!(
@@ -301,6 +302,8 @@ pub mod gamegambit {
         } else if wager.status == WagerStatus::Disputed {
             require!(is_authority, ErrorCode::Unauthorized);
         } else if wager.status == WagerStatus::Voting {
+            require!(is_authority, ErrorCode::Unauthorized);
+        } else if wager.status == WagerStatus::Joined {
             require!(is_authority, ErrorCode::Unauthorized);
         }
 
