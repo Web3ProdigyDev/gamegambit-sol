@@ -6,3 +6,9 @@ node_modules
 test-ledger
 .yarn
 .env
+authority-wallet.json
+authority.json
+platform_wallet.json
+keys/
+test-keys/
+.gitignore
