@@ -63,14 +63,20 @@ Real, finalized transactions on Solana Devnet:
 
 ## Overview
 
-GameGambit allows two players to:
+GameGambit allows two players to wager SOL on any supported game. The `lichess_game_id` field is a generic string identifier — for chess it holds a Lichess game ID, for other games it can hold a match reference or be left empty.
 
-1. **Create a wager** — Player A locks SOL stake in a WagerAccount PDA, linked to a Lichess game ID
+**Chess** — resolved automatically: the backend polls the Lichess API, matches usernames to wallet addresses, and calls `resolve_wager` with the authority keypair. No human in the loop.
+
+**CODM / PUBG / Free Fire** — resolved via peer voting: each player submits who they think won via `submit_vote`. If both agree, the wager auto-resolves after the retract window. If they disagree, it enters `Disputed` and the authority resolves.
+
+General flow:
+
+1. **Create a wager** — Player A locks SOL stake in a WagerAccount PDA
 2. **Join** — Player B matches the exact stake amount within 7 days
-3. **Play** — The game happens off-chain (on Lichess)
-4. **Vote** — Each player independently submits who they think won
+3. **Play** — The game happens off-chain
+4. **Vote** — Each player independently submits who they think won (non-chess), or the backend auto-resolves (chess)
 5. **Auto-resolve** — If both votes agree, the wager enters a 15-second retract window, then resolves
-6. **Dispute** — If votes conflict, the platform authority resolves using Lichess API data
+6. **Dispute** — If votes conflict, the platform authority resolves
 7. **Settle** — Winner receives 90% of the total pot, platform receives 10%
 
 The platform authority never holds custody. All funds sit in a program-owned PDA that can only be moved by valid program instructions.
@@ -149,7 +155,7 @@ Creates a new `WagerAccount` PDA and transfers Player A's stake into it via CPI 
 |-----------|------|-------------|
 | `match_id` | `u64` | Unique match identifier (must be > 0). Used as PDA seed. |
 | `stake_lamports` | `u64` | Amount each player stakes (must be > 0) |
-| `lichess_game_id` | `String` | Lichess game ID (max 20 characters) |
+| `lichess_game_id` | `String` | Game identifier — Lichess game ID for chess, match reference for other games, or empty string (max 20 characters) |
 | `requires_moderator` | `bool` | If true, only authority can resolve |
 
 **Accounts:**
@@ -220,7 +226,7 @@ Allows either player to retract their vote while the wager is in `Retractable` s
 
 ### `resolve_wager`
 
-Pays out 90% to winner and 10% to platform wallet using direct lamport manipulation. Closes the wager by setting `status = Resolved`.
+Pays out 90% to winner and 10% to platform wallet. Closes the wager by setting `status = Resolved`.
 
 **Fee Distribution:**
 ```
@@ -382,7 +388,7 @@ All events are emitted via Anchor's `emit!` macro and can be subscribed to via `
 | 6003 | `RetractExpired` | Retract window has already closed |
 | 6004 | `InvalidAmount` | Stake is zero or doesn't match wager amount |
 | 6005 | `InvalidMatchId` | Match ID must be > 0 |
-| 6006 | `LichessGameIdTooLong` | Lichess game ID exceeds 20 characters |
+| 6006 | `LichessGameIdTooLong` | Game identifier exceeds 20 characters |
 | 6007 | `InvalidVote` | Vote does not name a valid participant |
 | 6008 | `AlreadyVoted` | Player has already submitted a vote |
 | 6009 | `InvalidWinner` | Winner pubkey is not a participant |
@@ -472,7 +478,7 @@ PINATA_GATEWAY=https://gateway.pinata.cloud/ipfs
 
 ### Keypair Setup
 
-Test keypairs live in `test-keys/` and are auto-generated on first run. Their pubkeys are printed to console. Fund them on devnet before running tests:
+Test keypairs are auto-generated in `test-keys/` on first run and gitignored. Their pubkeys are printed to console. Fund them on devnet before running tests:
 
 ```bash
 solana airdrop 2 <PLAYER_A_PUBKEY> --url devnet
@@ -480,7 +486,7 @@ solana airdrop 2 <PLAYER_B_PUBKEY> --url devnet
 solana airdrop 2 <AUTHORITY_PUBKEY> --url devnet
 ```
 
-> **Never commit keypair JSON files.** They are gitignored. Keep `authority-wallet.json` and `platform_wallet.json` outside the project directory in production.
+> **Never commit keypair JSON files.** All keypair files are gitignored. The authority keypair used in production should be stored outside the project directory and loaded via environment variable only.
 
 ### Build
 
@@ -576,12 +582,7 @@ trophies/
   gold.png
   diamond.png
 
-test-keys/                            # Auto-generated test keypairs (gitignored)
-  authority.json
-  player_a.json
-  player_b.json
-  moderator.json
-  match_id_counter.json
+test-keys/                            # Auto-generated on first test run (gitignored)
 
 Anchor.toml                           # Anchor config — cluster: devnet
 Cargo.toml                            # Rust dependencies — anchor-lang 0.31.1
