@@ -5,7 +5,16 @@ declare_id!("E2Vd3U91kMrgwp8JCXcLSn7bt3NowDmGwoBYsVRhGfMR");
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const PLATFORM_FEE_BPS: u64 = 1000; // 10% = 1000 bps out of 10_000
+// Tiered platform fee (applied to total pot = stake × 2)
+// Micro  : < 0.5 SOL  → 10%
+// Mid    : 0.5–5 SOL  →  7%
+// Whale  : > 5 SOL    →  5%
+const MICRO_THRESHOLD_LAMPORTS: u64 = 500_000_000;   // 0.5 SOL
+const WHALE_THRESHOLD_LAMPORTS: u64 = 5_000_000_000; // 5.0 SOL
+
+const MICRO_FEE_BPS: u64 = 1000; // 10%
+const MID_FEE_BPS: u64   =  700; //  7%
+const WHALE_FEE_BPS: u64 =  500; //  5%
 
 const AUTHORITY_PUBKEY: Pubkey = pubkey!("Ec7XfHbeDw1YmHzcGo3WrK73QnqQ3GL9VBczYGPCQJha");
 const PLATFORM_WALLET_PUBKEY: Pubkey = pubkey!("3hwPwugeuZ33HWJ3SoJkDN2JT3Be9fH62r19ezFiCgYY");
@@ -23,6 +32,36 @@ const PLAYER_PROFILE_SPACE: usize = 128;
 //   lichess_game_id (24), requires_moderator (1), vote_player_a (33),
 //   vote_player_b (33), vote_timestamp (8), retract_deadline (8) = 107 bytes freed
 const WAGER_ACCOUNT_SPACE: usize = 160;
+
+// ── Fee helper ───────────────────────────────────────────────────────────────
+
+/// Returns the platform fee in lamports for a given stake.
+/// Tier is determined by stake_lamports (per-player stake, not the pot).
+///
+/// | Tier  | Stake            | Fee  |
+/// |-------|------------------|------|
+/// | Micro | < 0.5 SOL        | 10%  |
+/// | Mid   | 0.5 SOL – 5 SOL  |  7%  |
+/// | Whale | > 5 SOL          |  5%  |
+fn calculate_platform_fee(stake_lamports: u64) -> Result<u64> {
+    let fee_bps = if stake_lamports < MICRO_THRESHOLD_LAMPORTS {
+        MICRO_FEE_BPS
+    } else if stake_lamports <= WHALE_THRESHOLD_LAMPORTS {
+        MID_FEE_BPS
+    } else {
+        WHALE_FEE_BPS
+    };
+
+    let total_pot = stake_lamports
+        .checked_mul(2)
+        .ok_or(ErrorCode::ArithmeticOverflow)?;
+
+    total_pot
+        .checked_mul(fee_bps)
+        .ok_or(ErrorCode::ArithmeticOverflow)?
+        .checked_div(10_000)
+        .ok_or(ErrorCode::ArithmeticOverflow.into())
+}
 
 // ── Program ──────────────────────────────────────────────────────────────────
 
@@ -190,11 +229,10 @@ pub mod gamegambit {
         let total_pot = wager.stake_lamports
             .checked_mul(2)
             .ok_or(ErrorCode::ArithmeticOverflow)?;
-        let platform_fee = total_pot
-            .checked_mul(PLATFORM_FEE_BPS)
-            .ok_or(ErrorCode::ArithmeticOverflow)?
-            .checked_div(10_000)
-            .ok_or(ErrorCode::ArithmeticOverflow)?;
+
+        // Tiered fee: 10% (<0.5 SOL) | 7% (0.5–5 SOL) | 5% (>5 SOL)
+        let platform_fee = calculate_platform_fee(wager.stake_lamports)?;
+
         let winner_payout = total_pot
             .checked_sub(platform_fee)
             .ok_or(ErrorCode::ArithmeticOverflow)?;
